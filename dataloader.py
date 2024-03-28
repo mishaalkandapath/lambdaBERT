@@ -5,6 +5,8 @@ from torch.utils.data import Dataset, DataLoader
 import random
 import pandas as pd
 
+from transformers import BertTokenizer, BertModel
+
 #create a directory where the key is a csv. each row has first column as the raw text sentence, and the second col being the 
 # path to the file that stores all its lambda terms
 
@@ -35,6 +37,9 @@ class LambdaTermsDataset(Dataset):
 
 def data_init():
     
+    #load in the tokenizer
+    tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+
     dataset = LambdaTermsDataset('data/input_sentences.csv', 'data/lambda_terms', shuffle=True)
     #split the datset 70 20 10 split
     train_size = int(0.7 * len(dataset))
