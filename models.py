@@ -35,9 +35,41 @@ def train(model, train_loader, val_loader, epochs, lr=0.001):
             #get the bert embeddings for the target sequence
             target_embs = tokenization.process_bert_lambda(target_tokenized, lambda_index_mask, var_index_mask, lambda_norm=True, var_norm=True)
             #in_embs will be our encoder embs
-            out = model(target_embs[:, -1, :], in_embs)
+            out = model(target_embs[:, :-1, :], in_embs)
             target = target_embs[:, 1:, :]
-            loss = criterion(out, target)
+
+            #no mse for the pads, variables, lambda or anything else. jus tthe actual embeddings
+            #offset the masks by one 
+            lambda_index_mask, var_index_mask, var_index_mask_underscore, var_index_mask_no = (lambda_index_mask[:, 1:], var_index_mask[:, 1:], var_index_mask_underscore[:, 1:], var_index_mask_no[:, 1:])
+            loss = criterion(out[~(lambda_index_mask | var_index_mask_no.astype(torch.bool) | pad_mask)],
+                            target[~(lambda_index_mask | var_index_mask_no.astype(torch.bool) | pad_mask)])
+            
+            #take all lambdas into account and compute their difference with the first lambda #TODO: if this doesnt work, try a random perm pairing difference
+            loss += criterion(out[lambda_index_mask].reshape(-1, out.size(-1))[0:1, :], out[lambda_index_mask].reshape(-1, out.size(-1))[1:, :])
+
+            #contrastive losses on the variables at some point?
+            #get the variables only :
+            out_vars, target_vars = out[var_index_mask_no.astype(torch.bool)], target[var_index_mask_no.astype(torch.bool)]
+
+            #get the first indices of the variables involved. 
+            flattened_var_mask = var_index_mask_no[var_index_mask_no != 0]
+            _, reverse_indices, counts = torch.unique(flattened_var_mask, return_index=True, return_counts=True)
+            ind_sorted = torch.argsort(reverse_indices, stable=True)
+            cum_sum = counts.cumsum(0)
+            cum_sum = torch.cat([torch.tensor([0]), cum_sum])
+            first_indices = ind_sorted[cum_sum]
+            
+            #mseloss on this
+            target_vars = out[first_indices][reverse_indices] #reference embeddings arrangement
+            correct_nos = torch.count_nonzero(torch.count_nonzero(out_vars - target_vars, axis=-1) == 0)
+            loss += criterion(out_vars, target_vars.detach())
+            
+            #count var var mismatches
+            out_vars = out_vars.unsqueeze(1) - out_vars.unsqueeze(0)
+            #count the number of zeros here
+            nos = torch.count_nonzero(torch.count_nonzero(out_vars, axis=-1) == 0) - correct_nos
+
+            loss += nos
 
             optimizer.zero_grad()
             loss.backward()
@@ -56,6 +88,7 @@ def train(model, train_loader, val_loader, epochs, lr=0.001):
                 out = model(target_embs[:, -1, :], in_embs)
                 target = target_embs[:, 1:, :]
                 loss = criterion(out, target)
+
                 print(f"Epoch {epoch} Iteration {i} Loss: {loss.item()}")
     return model
 
