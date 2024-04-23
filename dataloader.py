@@ -25,7 +25,7 @@ class LambdaTermsDataset(Dataset):
         sentence = self.input_sentences.iloc[index, 0]
         path = self.input_sentences.iloc[index, 1]
         with open(path, 'r') as f:
-            lambda_terms = f.readlines()
+            lambda_terms = f.readlines()[0].strip()
 
         if self.transform:
             sentence = self.transform(sentence)
@@ -35,21 +35,21 @@ class LambdaTermsDataset(Dataset):
         return sentence, lambda_terms
     
 
-def data_init():
+def data_init(batch_size):
     
     #load in the tokenizer
-    tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+    # tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
 
-    dataset = LambdaTermsDataset('data/input_sentences.csv', 'data/lambda_terms', shuffle=True)
+    dataset = LambdaTermsDataset('lambdaBERT/data/input_sentences.csv', 'data/lambda_terms')
     #split the datset 70 20 10 split
     train_size = int(0.7 * len(dataset))
     val_size = int(0.2 * len(dataset))
     test_size = len(dataset) - train_size - val_size
     train_dataset, val_dataset, test_dataset = torch.utils.data.random_split(dataset, [train_size, val_size, test_size])
 
-    train_dataloader = DataLoader(train_dataset, batch_size=50, shuffle=True)
-    val_dataloader = DataLoader(val_dataset, batch_size=50, shuffle=True)
-    test_dataloader = DataLoader(test_dataset, batch_size=50, shuffle=True)
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=True)
+    test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True)
     
     return train_dataloader, val_dataloader, test_dataloader
 

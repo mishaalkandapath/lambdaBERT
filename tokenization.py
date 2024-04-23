@@ -59,7 +59,7 @@ def process_bert_lambda(tokenized_sents, lambda_index_mask, var_index_mask, lamb
         embs = torch.gather(embs, -1, mask_sort.unsqueeze(-1).expand(-1, -1, embs.size(-1)))  # all the var names and the underscores have been moveed to the end
         
         #now we have the var_numbers which we need to uniq-ify
-        uniques, indices = torch.unique(var_index_mask_no.reshape(-1), return_inverse=True)
+        uniques, indices = torch.unique(var_index_mask_no.reshape(-1), return_inverse=True, sorted=True)
         # mapping = torch.arange(1, len(uniques) + 1, dtype=torch.int64)
         # new_var_no_index = mapping[indices]
         # new_var_no_index = new_var_no_index.reshape(var_index_mask_no.shape)
