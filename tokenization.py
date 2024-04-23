@@ -5,9 +5,9 @@ TOKENIZER = BertTokenizer.from_pretrained("bert-base-uncased")
 
 BERT_MODEL = BertModel.from_pretrained("bert-base-uncased", output_hidden_states=True)
 
-BIG_VAR_EMBS = -torch.ones((200, 768)) * (torch.tensor(range(1, 201)))[:, None]
+BIG_VAR_EMBS = -torch.ones((2000, 768)) * (torch.tensor(range(1, 2001)))[:, None]
 
-def create_out_embeddings(sentences):
+def create_out_embeddings(sentences, lamda=False):
     #tokenize tha sentence 
     tokenized = TOKENIZER(sentences, 
                           return_tensors="pt", #return torch tensors
@@ -17,19 +17,25 @@ def create_out_embeddings(sentences):
     input_ids = tokenized["input_ids"]
     lambda_id = TOKENIZER.convert_tokens_to_ids("λ")
 
-    #get all the indices where the lambda token is presen
-    lambda_index_mask = (input_ids == lambda_id)
-    var_index_mask = (input_ids == TOKENIZER.convert_tokens_to_ids("np"))
-    var_index_mask = var_index_mask | (input_ids == TOKENIZER.convert_tokens_to_ids("##np"))
-    #shift the 1s in var_index_mask to the right by 1
-    var_index_mask_underscore = torch.roll(var_index_mask, shifts=1, dims=1)
-    #roll again
-    var_index_mask_no = torch.roll(var_index_mask_underscore, shifts=1, dims=1)
-    var_index_mask_no = torch.where(var_index_mask_no == 1, input_ids, 0) #make the variable numbers in the mask
+    if lamda:
+        #get all the indices where the lambda token is presen
+        lambda_index_mask = (input_ids == lambda_id)
+        var_index_mask = (input_ids == TOKENIZER.convert_tokens_to_ids("np"))
+        var_index_mask = var_index_mask | (input_ids == TOKENIZER.convert_tokens_to_ids("##np"))
+        #shift the 1s in var_index_mask to the right by 1
+        var_index_mask_underscore = torch.roll(var_index_mask, shifts=1, dims=1)
+        #roll again
+        var_index_mask_no = torch.roll(var_index_mask_underscore, shifts=1, dims=1)
+        var_index_mask_no = torch.where(var_index_mask_no == 1, input_ids, 0) #make the variable numbers in the mask
+        #to ensure uniqueness batch wise we add a constant along the batch dimension
+        var_index_mask_no_new = var_index_mask_no + torch.arange(0, var_index_mask_no.size(0)).reshape(var_index_mask_no.size(0), 1)
+        #everything that isnt var no shud be zero still
+        var_index_mask_no_new[var_index_mask_no == 0] = 0
+        var_index_mask_no = var_index_mask_no_new
 
     # the mask of tokens belonging to the variable name, both next to the lambda and within an expression
     pad_mask = (input_ids == TOKENIZER.pad_token_id)
-    return tokenized, lambda_index_mask, var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask
+    return (tokenized, lambda_index_mask, var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask) if lamda else (tokenized, pad_mask)
 
 def get_bert_emb(tokenized_sents):
     #get the bert embeddings
@@ -39,7 +45,7 @@ def get_bert_emb(tokenized_sents):
         #sum the last four hidden states
         embs = torch.stack(hidden_states, dim=0).sum(dim=0)
 
-    return embs
+    return embs.detach() # no grads through bert ever
 
 def process_bert_lambda(tokenized_sents, lambda_index_mask, var_index_mask, lambda_norm=True, var_norm=True):
     assert lambda_norm if var_norm else True, "norm_lambda cant be off and norm_var be on"
@@ -54,12 +60,17 @@ def process_bert_lambda(tokenized_sents, lambda_index_mask, var_index_mask, lamb
         
         #now we have the var_numbers which we need to uniq-ify
         uniques, indices = torch.unique(var_index_mask_no.reshape(-1), return_inverse=True)
-        mapping = torch.arange(1, len(uniques) + 1, dtype=torch.int64)
-        new_var_no_index = mapping[indices]
-        new_var_no_index = new_var_no_index.reshape(var_index_mask_no.shape)
-        embs[var_index_mask_no != 0] = BIG_VAR_EMBS[var_index_mask_no]
+        # mapping = torch.arange(1, len(uniques) + 1, dtype=torch.int64)
+        # new_var_no_index = mapping[indices]
+        # new_var_no_index = new_var_no_index.reshape(var_index_mask_no.shape)
+        # embs[var_index_mask_no != 0] = BIG_VAR_EMBS[var_index_mask_no != 0]
+
+        # embs[var_index_mask_no != 0] = BIG_VAR_EMBS[indices != 0]
+        embs = embs.index_put((var_index_mask_no != 0, ), BIG_VAR_EMBS[indices[indices != 0]], accumulate=True)
     if lambda_norm:
-        embs[lambda_index_mask] = torch.zeros_like(embs.shape[-1])
+        embs[lambda_index_mask] = torch.ones((embs.shape[-1], ))
+    
+    return embs
 
 def process_bert_word_lambda(tokenized_sents, lambda_index_mask, var_index_mask, lambda_norm=True, var_norm=True):
     #word embeddings instead of contextual embeddings

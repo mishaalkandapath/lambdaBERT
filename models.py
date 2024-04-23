@@ -4,9 +4,11 @@ import torch.optim as optim
 import torch.utils.data as data
 
 import tokenization
+import dataloader
 
 class TransformerDecoderStack(nn.Module):
     def __init__(self, num_layers, d_model, num_heads, d_ff, dropout=0.2, device="cpu"):
+        super(TransformerDecoderStack, self).__init__()
         decoder_layer = nn.TransformerDecoderLayer(d_model, num_heads, dropout=dropout, device=device)
         self.decoders = nn.TransformerDecoder(decoder_layer, num_layers)
         self.d_model = d_model
@@ -33,7 +35,7 @@ def train(model, train_loader, val_loader, epochs, lr=0.001):
             in_embs[in_pad_mask] = torch.zeros_like(in_embs[0, 0, :])
 
             #get the bert embeddings for the target sequence
-            target_embs = tokenization.process_bert_lambda(target_tokenized, lambda_index_mask, var_index_mask, lambda_norm=True, var_norm=True)
+            target_embs = tokenization.process_bert_lambda(target_tokenized, lambda_index_mask, (var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask), lambda_norm=True, var_norm=True)
             #in_embs will be our encoder embs
             out = model(target_embs[:, :-1, :], in_embs)
             target = target_embs[:, 1:, :]
@@ -92,3 +94,10 @@ def train(model, train_loader, val_loader, epochs, lr=0.001):
                 print(f"Epoch {epoch} Iteration {i} Loss: {loss.item()}")
     return model
 
+if __name__ == "__main__":
+    model = TransformerDecoderStack(6, 768, 12, 3072)
+    print("-- Initialized Model --")
+    print("Dataloading...")
+    train_dataloader, val_dataloader, test_dataloader = dataloader.data_init()
+    print("--Training Begins--")
+    train(model, train_dataloader, val_dataloader, 10)
