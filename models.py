@@ -15,6 +15,8 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 
 from tqdm import tqdm
 
+SAVE_DIR = "lambdaBERT/models/"
+
 ### Distributed Training Modules ###
 def setup(rank, world_size):
     os.environ['MASTER_ADDR'] = 'localhost'
@@ -165,6 +167,19 @@ def ddp_mp_training(rank, world_size):
     setup(rank, world_size)
     model = TransformerDecoderStack(4, 768, 8, 3072, [i*2 +1 for i in range(rank)]) # alternate the gpus
     ddp_model = DDP(model)
+    
+    #checkpointing
+    CHECKPOINT_PATH = SAVE_DIR + "/model.checkpoint"
+    if rank == 0:
+        torch.save(model.state_dict(), CHECKPOINT_PATH)
+    
+    # Use a barrier() to make sure that process 1 loads the model after process
+    # 0 saves it.
+    dist.barrier()
+    # configure map_location properly
+    map_location = {'cuda:%d' % 0: 'cuda:%d' % rank} #move from 0 to current rank
+    ddp_model.load_state_dict(
+        torch.load(CHECKPOINT_PATH, map_location=map_location))
 
     train_dataloader, val_dataloader, test_dataloader = dataloader.data_init(100)
     train(ddp_model, train_dataloader, val_dataloader, 10)
