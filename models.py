@@ -29,17 +29,46 @@ def cleanup():
 
 ### Model Definition ###
 class TransformerDecoderStack(nn.Module):
-    def __init__(self, num_layers, d_model, num_heads, d_ff, dropout=0.2, device="cpu"):
+    def __init__(self, num_layers, d_model, num_heads, d_ff, dropout=0.2, devices=[]):
         super(TransformerDecoderStack, self).__init__()
-        decoder_layer = nn.TransformerDecoderLayer(d_model, num_heads, dropout=dropout, device=device, batch_first=True)
-        self.decoders = nn.TransformerDecoder(decoder_layer, num_layers)
+
+        assert len(devices) % 2 == 0, "Number of devices must be even"
+        #make device atts
+        for i, device in enumerate(devices):
+            assert torch.cuda.is_available(device), f"Device {device} is not available"
+            setattr(self, f"device_{i}", device)
+
         self.d_model = d_model
         self.num_layers = num_layers
-        self.final_forward = nn.Linear(d_model, d_model, device=device)
-    
+        self.final_forward = nn.Linear(d_model, d_model, device=getattr(self, f"device_{len(devices) - 1}"))
+
+        self.decoders = nn.ModuleList([nn.TransformerDecoderLayer(d_model, num_heads, dropout=dropout, device=device, batch_first=True)
+                                        for _ in range(self.num_layers)])
+
+        self.layers_in_a_gpu = num_layers // len(devices)
+        for i in range(self.num_layers): # send decoders to the appropriate devices
+            self.decoders[i] = self.decoders[i].to(getattr(self, f"device_{i//self.layers_in_a_gpu}"))
+        
+        
+        
     def forward(self, seq, emb):
-        out = self.decoders(seq, emb)
-        return out
+        outputs = seq
+        #start from gpu 0
+        outputs = outputs.to(getattr(self, f"device_{0}"))
+        emb = emb.to(getattr(self, f"device_{0}"))
+        #mask the sequence of autoregressivity
+        tgt_mask = torch.nn.Transformer.generate_square_subsequent_mask(seq.size(1)).to(emb.device)
+
+        for i in range(self.num_layers):
+            outputs = self.decoders[i](outputs, emb, tgt_mask=tgt_mask)
+
+            #change devices if you need to 
+            if (i+1) % self.layers_in_a_gpu == 0 and i != self.num_layers - 1:
+                outputs = outputs.to(getattr(self, f"device_{i//self.layers_in_a_gpu}"))
+                emb = emb.to(getattr(self, f"device_{i//self.layers_in_a_gpu}"))
+
+        outputs = self.final_forward(outputs)
+        return outputs
 
 def train(model, train_loader, val_loader, epochs, lr=0.001):
     optimizer = optim.Adam(model.parameters(), lr=lr)
@@ -70,7 +99,7 @@ def train(model, train_loader, val_loader, epochs, lr=0.001):
             loss = criterion(out[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | pad_mask)],
                             target[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | pad_mask)])
             
-            #take all lambdas into account and compute their difference with the first lambda #TODO: if this doesnt work, try a random perm pairing difference
+            #take all lambdas into account and compute their difference with the first lambda
             repeat_times = out[lambda_index_mask].reshape(-1, out.size(-1))[1:, :].shape[0]
             loss += criterion(out[lambda_index_mask].reshape(-1, out.size(-1))[0:1, :].repeat(repeat_times, 1), out[lambda_index_mask].reshape(-1, out.size(-1))[1:, :])
 
@@ -132,11 +161,26 @@ def ddp_training(rank, world_size):
     
     cleanup()
 
+def ddp_mp_training(rank, world_size):
+    setup(rank, world_size)
+    model = TransformerDecoderStack(4, 768, 8, 3072, [i*2 +1 for i in range(rank)]) # alternate the gpus
+    ddp_model = DDP(model)
 
+    train_dataloader, val_dataloader, test_dataloader = dataloader.data_init(100)
+    train(ddp_model, train_dataloader, val_dataloader, 10)
+
+    cleanup()
 
 if __name__ == "__main__":
+    # mp.spawn(ddp_training, args=(2, ), nprocs=2, join=True) # world_size = 2
 
-    mp.spawn(ddp_training, args=(2, ), nprocs=2, join=True) # world_size = 2
+    n_gpus = torch.cuda.device_count()
+    world_size = n_gpus//2
+    mp.spawn(ddp_mp_training,
+             args=(world_size,),
+             nprocs=world_size,
+             join=True)
+
     # model = TransformerDecoderStack(6, 768, 12, 3072)
     # print("-- Initialized Model --")
     # print("Dataloading...")
