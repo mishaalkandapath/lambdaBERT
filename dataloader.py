@@ -47,9 +47,9 @@ def data_init(batch_size):
     test_size = len(dataset) - train_size - val_size
     train_dataset, val_dataset, test_dataset = torch.utils.data.random_split(dataset, [train_size, val_size, test_size])
 
-    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=True)
-    test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True)
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, generator=torch.Generator(device='cuda'))
+    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=True, generator=torch.Generator(device='cuda'))
+    test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True, generator=torch.Generator(device='cuda'))
     
     return train_dataloader, val_dataloader, test_dataloader
 

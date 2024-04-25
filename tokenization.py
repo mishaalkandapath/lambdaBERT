@@ -37,25 +37,29 @@ def create_out_embeddings(sentences, lamda=False):
     pad_mask = (input_ids == TOKENIZER.pad_token_id)
     return (tokenized, lambda_index_mask, var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask) if lamda else (tokenized, pad_mask)
 
-def get_bert_emb(tokenized_sents):
+def get_bert_emb(tokenized_sents, rank):
     #get the bert embeddings
+    global BERT_MODEL
+    BERT_MODEL = BERT_MODEL.to(rank)
     with torch.no_grad():
         outputs = BERT_MODEL(**tokenized_sents, output_hidden_states=True)
         hidden_states = outputs.hidden_states[-4:]
         #sum the last four hidden states
         embs = torch.stack(hidden_states, dim=0).sum(dim=0)
-
+    #move BERT back to cpu
+    BERT_MODEL = BERT_MODEL.to(torch.device('cpu'))
     return embs.detach() # no grads through bert ever
 
-def process_bert_lambda(tokenized_sents, lambda_index_mask, var_index_mask, lambda_norm=True, var_norm=True):
+def process_bert_lambda(tokenized_sents, lambda_index_mask, var_index_mask, rank, lambda_norm=True, var_norm=True):
     assert lambda_norm if var_norm else True, "norm_lambda cant be off and norm_var be on"
+    global BIG_VAR_EMBS
     #get the bert embeddings
     var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask = var_index_mask
-    embs = get_bert_emb(tokenized_sents)
+    embs = get_bert_emb(tokenized_sents, rank)
     #time to mask out the variables
     if var_norm: 
         embs[var_index_mask | var_index_mask_underscore | pad_mask] = torch.zeros_like(embs[0, 0, :]) # also make hte pad embeddings 0
-        mask_sort = torch.argsort(var_index_mask | var_index_mask_underscore, stable=True) #move the embeddiungs to the end
+        mask_sort = torch.argsort((var_index_mask | var_index_mask_underscore).to(torch.uint8), stable=True) #move the embeddiungs to the end
         embs = torch.gather(embs, -1, mask_sort.unsqueeze(-1).expand(-1, -1, embs.size(-1)))  # all the var names and the underscores have been moveed to the end
         
         #now we have the var_numbers which we need to uniq-ify
@@ -66,10 +70,15 @@ def process_bert_lambda(tokenized_sents, lambda_index_mask, var_index_mask, lamb
         # embs[var_index_mask_no != 0] = BIG_VAR_EMBS[var_index_mask_no != 0]
 
         # embs[var_index_mask_no != 0] = BIG_VAR_EMBS[indices != 0]
+        #one time operation, perform on CPU
+        indices = indices.to(torch.device('cpu'))
+        var_index_mask_no = var_index_mask_no.to(torch.device('cpu'))
+        embs = embs.to(torch.device('cpu'))
         embs = embs.index_put((var_index_mask_no != 0, ), BIG_VAR_EMBS[indices[indices != 0]], accumulate=True)
+        embs = embs.to(rank)
     if lambda_norm:
         embs[lambda_index_mask] = torch.ones((embs.shape[-1], ))
-    
+    #back to gpu
     return embs
 
 def process_bert_word_lambda(tokenized_sents, lambda_index_mask, var_index_mask, lambda_norm=True, var_norm=True):
