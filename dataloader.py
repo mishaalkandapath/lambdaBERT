@@ -10,6 +10,8 @@ from transformers import BertTokenizer, BertModel
 #create a directory where the key is a csv. each row has first column as the raw text sentence, and the second col being the 
 # path to the file that stores all its lambda terms
 
+DATA_PATH = "data/"
+
 
 class LambdaTermsDataset(Dataset):
     def __init__(self, input_sentences_file, main_dir, transform=None, target_transform=None):
@@ -40,7 +42,7 @@ def data_init(batch_size):
     #load in the tokenizer
     # tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
 
-    dataset = LambdaTermsDataset('lambdaBERT/data/input_sentences.csv', 'data/lambda_terms')
+    dataset = LambdaTermsDataset(DATA_PATH + 'input_sentences.csv', DATA_PATH + 'lambda_terms/')
     #split the datset 70 20 10 split
     train_size = int(0.7 * len(dataset))
     val_size = int(0.2 * len(dataset))
