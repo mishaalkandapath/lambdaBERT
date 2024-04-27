@@ -6,10 +6,10 @@ import tokenization
 import dataloader
 
 import os
-import sys
-import tempfile
 import torch
+
 import lightning as L
+from lightning.pytorch.loggers import CSVLogger
 
 import torch.distributed as dist
 import torch.multiprocessing as mp
@@ -18,7 +18,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from tqdm import tqdm
 import argparse
 
-SAVE_DIR = "lambdaBERT/models/"
+SAVE_DIR = "/home/mishaalk/scratch/data/"
 
 ### Distributed Training Modules ###
 def setup(rank, world_size):
@@ -100,7 +100,7 @@ class LitTransformerStack(L.LightningModule):
         super().__init__()
         self.model = model
 
-    def validatino_step(self, batch, batch_idx):
+    def validation_step(self, batch, batch_idx):
         criterion = nn.MSELoss()
         (seq, target_seq) = batch
         tokenized, in_pad_mask = tokenization.create_out_embeddings(seq)
@@ -109,7 +109,11 @@ class LitTransformerStack(L.LightningModule):
         in_embs = tokenization.get_bert_emb(tokenized)
         in_embs[in_pad_mask] = torch.zeros_like(in_embs[0, 0, :])
 
-        target_embs = tokenization.process_bert_lambda(target_tokenized, lambda_index_mask, var_index_mask, lambda_norm=True, var_norm=True)
+        target_embs = tokenization.process_bert_lambda(target_tokenized, lambda_index_mask, (var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask), lambda_norm=True, var_norm=True)
+        
+        target_embs, in_embs = target_embs.to(self.device), in_embs.to(self.device)
+        lambda_index_mask, var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask = (lambda_index_mask.to(self.device), var_index_mask.to(self.device), var_index_mask_underscore.to(self.device), var_index_mask_no.to(self.device), pad_mask.to(self.device))
+        
         out = self.model(target_embs[:, -1, :], in_embs)
         target = target_embs[:, 1:, :]
         loss = criterion(out, target)
@@ -158,7 +162,7 @@ class LitTransformerStack(L.LightningModule):
         ind_sorted = torch.argsort(reverse_indices.to(torch.uint8), stable=True)
         ind_sorted = ind_sorted.to(self.device)
         cum_sum = counts.cumsum(0) - 1
-        cum_sum = torch.cat([torch.tensor([0]), cum_sum])
+        cum_sum = torch.cat([torch.tensor([0]).to(self.device), cum_sum])
         first_indices = ind_sorted[cum_sum]
         
         #mseloss on this
@@ -270,7 +274,7 @@ def ddp_training(rank, world_size):
     model = TransformerDecoderStack(4, 384, 8, 3072).to(rank)
     ddp_model = DDP(model, device_ids=[rank])
 
-    train_dataloader, val_dataloader, test_dataloader = dataloader.data_init(100)
+    train_dataloader, val_dataloader = dataloader.data_init(100)
 
     train(ddp_model, train_dataloader, val_dataloader, 10, rank=rank)
     
@@ -282,7 +286,7 @@ def ddp_mp_training(rank, world_size):
     ddp_model = DDP(model)
     
     #checkpointing
-    CHECKPOINT_PATH = SAVE_DIR + "/model.checkpoint"
+    CHECKPOINT_PATH = SAVE_DIR + "models/model.checkpoint"
     if rank == 0:
         torch.save(model.state_dict(), CHECKPOINT_PATH)
     
@@ -294,7 +298,7 @@ def ddp_mp_training(rank, world_size):
     ddp_model.load_state_dict(
         torch.load(CHECKPOINT_PATH, map_location=map_location))
 
-    train_dataloader, val_dataloader, test_dataloader = dataloader.data_init(100)
+    train_dataloader, val_dataloader = dataloader.data_init(100)
     train(ddp_model, train_dataloader, val_dataloader, 10)
 
     cleanup()
@@ -302,8 +306,10 @@ def ddp_mp_training(rank, world_size):
 def main(hparams=None):
     model = TransformerDecoderStack(4, 384, 8, 3072)
     model = LitTransformerStack(model)
-    trainer = L.Trainer(max_epochs=20)
-    train_dataloader, val_dataloader, test_dataloader = dataloader.data_init(100)
+
+    logger = CSVLogger(SAVE_DIR+"logs/")
+    trainer = L.Trainer(max_epochs=5, logger=logger, default_root_dir=SAVE_DIR+"models/")
+    train_dataloader, val_dataloader = dataloader.data_init(100)
     trainer.fit(model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
 
 
