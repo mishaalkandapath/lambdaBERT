@@ -9,6 +9,8 @@ import os
 import sys
 import tempfile
 import torch
+import lightning as L
+
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -69,9 +71,7 @@ class TransformerDecoderStack(nn.Module):
 
             pytorch_total_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
             print(f"Total Trainable Params: {pytorch_total_params}")
-        
-        
-        
+                
     def forward(self, seq, emb):
         outputs = seq
         #start from gpu 0
@@ -94,6 +94,92 @@ class TransformerDecoderStack(nn.Module):
 
         outputs = self.final_forward(outputs)
         return outputs
+
+class LitTransformerStack(L.LightningModule):
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+
+    def validatino_step(self, batch, batch_idx):
+        criterion = nn.MSELoss()
+        (seq, target_seq) = batch
+        tokenized, in_pad_mask = tokenization.create_out_embeddings(seq)
+        target_tokenized, lambda_index_mask, var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask = tokenization.create_out_embeddings(target_seq, lamda=True)
+
+        in_embs = tokenization.get_bert_emb(tokenized)
+        in_embs[in_pad_mask] = torch.zeros_like(in_embs[0, 0, :])
+
+        target_embs = tokenization.process_bert_lambda(target_tokenized, lambda_index_mask, var_index_mask, lambda_norm=True, var_norm=True)
+        out = self.model(target_embs[:, -1, :], in_embs)
+        target = target_embs[:, 1:, :]
+        loss = criterion(out, target)
+
+        self.log("val_loss", loss)
+
+    def training_step(self, batch, batch_idx):
+        criterion = nn.MSELoss()
+        (seq, target_seq) = batch
+
+        #tokenize the sqequences
+        tokenized, in_pad_mask = tokenization.create_out_embeddings(seq)
+        target_tokenized, lambda_index_mask, var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask = tokenization.create_out_embeddings(target_seq, lamda=True)
+        
+        #get the bert embeddings
+        in_embs = tokenization.get_bert_emb(tokenized)
+        #mask out the pads:
+        in_embs[in_pad_mask] = torch.zeros_like(in_embs[0, 0, :])
+
+        #get the bert embeddings for the target sequence
+        target_embs = tokenization.process_bert_lambda(target_tokenized, lambda_index_mask, (var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask), lambda_norm=True, var_norm=True)
+        #in_embs will be our encoder embs
+        target_embs, in_embs = target_embs.to(self.device), in_embs.to(self.device)
+        lambda_index_mask, var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask = (lambda_index_mask.to(self.device), var_index_mask.to(self.device), var_index_mask_underscore.to(self.device), var_index_mask_no.to(self.device), pad_mask.to(self.device))
+        out = self.model(target_embs[:, :-1, :], in_embs)
+        target = target_embs[:, 1:, :]
+
+        #no mse for the pads, variables, lambda or anything else. jus tthe actual embeddings
+        #offset the masks by one 
+        lambda_index_mask, var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask = (lambda_index_mask[:, 1:], var_index_mask[:, 1:], var_index_mask_underscore[:, 1:], var_index_mask_no[:, 1:], pad_mask[:, 1:])
+
+        loss = criterion(out[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | pad_mask)],
+                        target[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | pad_mask)])
+        
+        #take all lambdas into account and compute their difference with the first lambda
+        repeat_times = out[lambda_index_mask].reshape(-1, out.size(-1))[1:, :].shape[0]
+        loss += criterion(out[lambda_index_mask].reshape(-1, out.size(-1))[0:1, :].repeat(repeat_times, 1), out[lambda_index_mask].reshape(-1, out.size(-1))[1:, :])
+
+        #contrastive losses on the variables at some point?
+        #get the variables only :
+        out_vars, target_vars = out[var_index_mask_no.type(torch.bool)], target[var_index_mask_no.type(torch.bool)]
+
+        #get the first indices of the variables involved. 
+        flattened_var_mask = var_index_mask_no[var_index_mask_no != 0]
+        _, reverse_indices, counts = torch.unique(flattened_var_mask, return_inverse=True, return_counts=True, sorted=True)
+        ind_sorted = torch.argsort(reverse_indices.to(torch.uint8), stable=True)
+        ind_sorted = ind_sorted.to(self.device)
+        cum_sum = counts.cumsum(0) - 1
+        cum_sum = torch.cat([torch.tensor([0]), cum_sum])
+        first_indices = ind_sorted[cum_sum]
+        
+        #mseloss on this
+        target_vars = out_vars[first_indices][reverse_indices] #reference embeddings arrangement
+        correct_nos = torch.count_nonzero(torch.count_nonzero(out_vars - target_vars, axis=-1) == 0)
+
+        #make sure on gpu
+        loss += criterion(out_vars, target_vars.detach())
+        
+        #count var var mismatches
+        out_vars = out_vars.unsqueeze(1) - out_vars.unsqueeze(0)
+        #count the number of zeros here
+        nos = torch.count_nonzero(torch.count_nonzero(out_vars, axis=-1) == 0) - correct_nos
+        loss += nos
+
+        return loss   
+
+    def configure_optimizers(self):
+        optimizer = optim.Adam(self.parameters(), lr=1e-3)
+        return optimizer
+
 
 def train(model, train_loader, val_loader, epochs, lr=0.001, rank=0):
 
@@ -213,6 +299,14 @@ def ddp_mp_training(rank, world_size):
 
     cleanup()
 
+def main(hparams=None):
+    model = TransformerDecoderStack(4, 384, 8, 3072)
+    model = LitTransformerStack(model)
+    trainer = L.Trainer(max_epochs=20)
+    train_dataloader, val_dataloader, test_dataloader = dataloader.data_init(100)
+    trainer.fit(model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
+
+
 if __name__ == "__main__":
     #make arg parser
     #set visible gpus:
@@ -223,16 +317,19 @@ if __name__ == "__main__":
     parser.add_argument("--d_model", type=int, default=384, help="Model Dimension")
 
     args = parser.parse_args()
-
+    
     if args.mode == 0:
         mp.spawn(ddp_training, args=(2, ), nprocs=2, join=True) # world_size = 2
-    else:
+    elif args.mode == 1:
         n_gpus = torch.cuda.device_count()
         world_size = n_gpus//2
         mp.spawn(ddp_mp_training,
                 args=(world_size,),
                 nprocs=world_size,
                 join=True)
+    else:
+        main()
+
 
     # model = TransformerDecoderStack(6, 384, 12, 3072)
     # print("-- Initialized Model --")

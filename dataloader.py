@@ -26,6 +26,7 @@ class LambdaTermsDataset(Dataset):
     def __getitem__(self, index):
         sentence = self.input_sentences.iloc[index, 0]
         path = self.input_sentences.iloc[index, 1]
+        path = DATA_PATH + path[len("lambdaBERT/data/"):]
         with open(path, 'r') as f:
             lambda_terms = f.readlines()[0].strip()
 
@@ -49,9 +50,9 @@ def data_init(batch_size):
     test_size = len(dataset) - train_size - val_size
     train_dataset, val_dataset, test_dataset = torch.utils.data.random_split(dataset, [train_size, val_size, test_size])
 
-    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, generator=torch.Generator(device='cuda'))
-    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=True, generator=torch.Generator(device='cuda'))
-    test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True, generator=torch.Generator(device='cuda'))
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=39)
+    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=True, num_workers=39)
+    test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True, num_workers=39)
     
     return train_dataloader, val_dataloader, test_dataloader
 
