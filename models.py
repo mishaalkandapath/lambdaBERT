@@ -113,12 +113,49 @@ class LitTransformerStack(L.LightningModule):
         
         target_embs, in_embs = target_embs.to(self.device), in_embs.to(self.device)
         lambda_index_mask, var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask = (lambda_index_mask.to(self.device), var_index_mask.to(self.device), var_index_mask_underscore.to(self.device), var_index_mask_no.to(self.device), pad_mask.to(self.device))
-        
-        out = self.model(target_embs[:, -1, :], in_embs)
-        target = target_embs[:, 1:, :]
-        loss = criterion(out, target)
 
-        self.log("val_loss", loss)
+
+        out = self.model(target_embs[:, :-1, :], in_embs)
+        target = target_embs[:, 1:, :]
+        
+        #no mse for the pads, variables, lambda or anything else. jus tthe actual embeddings
+        #offset the masks by one 
+        lambda_index_mask, var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask = (lambda_index_mask[:, 1:], var_index_mask[:, 1:], var_index_mask_underscore[:, 1:], var_index_mask_no[:, 1:], pad_mask[:, 1:])
+
+        loss = criterion(out[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | pad_mask)],
+                        target[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | pad_mask)])
+        
+        #take all lambdas into account and compute their difference with the first lambda
+        repeat_times = out[lambda_index_mask].reshape(-1, out.size(-1))[1:, :].shape[0]
+        loss += criterion(out[lambda_index_mask].reshape(-1, out.size(-1))[0:1, :].repeat(repeat_times, 1), out[lambda_index_mask].reshape(-1, out.size(-1))[1:, :])
+
+        #contrastive losses on the variables at some point?
+        #get the variables only :
+        out_vars, target_vars = out[var_index_mask_no.type(torch.bool)], target[var_index_mask_no.type(torch.bool)]
+
+        #get the first indices of the variables involved. 
+        flattened_var_mask = var_index_mask_no[var_index_mask_no != 0]
+        _, reverse_indices, counts = torch.unique(flattened_var_mask, return_inverse=True, return_counts=True, sorted=True)
+        ind_sorted = torch.argsort(reverse_indices.to(torch.uint8), stable=True)
+        ind_sorted = ind_sorted.to(self.device)
+        cum_sum = counts.cumsum(0) - 1
+        cum_sum = torch.cat([torch.tensor([0]).to(self.device), cum_sum])
+        first_indices = ind_sorted[cum_sum]
+        
+        #mseloss on this
+        target_vars = out_vars[first_indices][reverse_indices] #reference embeddings arrangement
+        correct_nos = torch.count_nonzero(torch.count_nonzero(out_vars - target_vars, axis=-1) == 0)
+
+        #make sure on gpu
+        loss += criterion(out_vars, target_vars.detach())
+        
+        #count var var mismatches
+        out_vars = out_vars.unsqueeze(1) - out_vars.unsqueeze(0)
+        #count the number of zeros here
+        nos = torch.count_nonzero(torch.count_nonzero(out_vars, axis=-1) == 0) - correct_nos
+        loss += nos
+
+        self.log("val_loss", loss, batch_size=out.size(0), sync_dist=True) 
 
     def training_step(self, batch, batch_idx):
         criterion = nn.MSELoss()
@@ -177,6 +214,9 @@ class LitTransformerStack(L.LightningModule):
         #count the number of zeros here
         nos = torch.count_nonzero(torch.count_nonzero(out_vars, axis=-1) == 0) - correct_nos
         loss += nos
+
+        #delet all matrices
+        del out_vars, target_vars, out, target, in_embs, target_embs, tokenized, target_tokenized, lambda_index_mask, var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask
 
         return loss   
 
