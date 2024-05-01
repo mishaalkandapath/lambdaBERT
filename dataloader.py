@@ -60,8 +60,8 @@ def data_init(batch_size, test=False):
 
         train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
 
-        train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=12)
-        val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=12)
+        train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=9)
+        val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=9)
 
         return train_dataloader, val_dataloader
 

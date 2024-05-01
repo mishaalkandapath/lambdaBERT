@@ -17,6 +17,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 
 from tqdm import tqdm
 import argparse
+import copy
 
 SAVE_DIR = "/home/mishaalk/scratch/data/"
 
@@ -99,6 +100,9 @@ class LitTransformerStack(L.LightningModule):
     def __init__(self, model):
         super().__init__()
         self.model = model
+        #pick a random bunch of parameters:
+        # self.reference_param = None
+        # self.fin_reference = None
 
     def validation_step(self, batch, batch_idx):
         criterion = nn.MSELoss()
@@ -124,11 +128,16 @@ class LitTransformerStack(L.LightningModule):
 
         loss = criterion(out[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | pad_mask)],
                         target[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | pad_mask)])
+
+        self.log("val_loss_tokens", loss, batch_size=out.size(0), sync_dist=True) 
         
         #take all lambdas into account and compute their difference with the first lambda
         repeat_times = out[lambda_index_mask].reshape(-1, out.size(-1))[1:, :].shape[0]
-        loss += criterion(out[lambda_index_mask].reshape(-1, out.size(-1))[0:1, :].repeat(repeat_times, 1), out[lambda_index_mask].reshape(-1, out.size(-1))[1:, :])
+        lambda_loss = criterion(out[lambda_index_mask].reshape(-1, out.size(-1))[0:1, :].repeat(repeat_times, 1), out[lambda_index_mask].reshape(-1, out.size(-1))[1:, :])
+        loss += lambda_loss
 
+        self.log("val_loss_lambdas", lambda_loss, batch_size=out.size(0), sync_dist=True) 
+        
         #contrastive losses on the variables at some point?
         #get the variables only :
         out_vars, target_vars = out[var_index_mask_no.type(torch.bool)], target[var_index_mask_no.type(torch.bool)]
@@ -147,15 +156,18 @@ class LitTransformerStack(L.LightningModule):
         correct_nos = torch.count_nonzero(torch.count_nonzero(out_vars - target_vars, axis=-1) == 0)
 
         #make sure on gpu
-        loss += criterion(out_vars, target_vars.detach())
+        var_loss = criterion(out_vars, target_vars.detach())
+        loss += var_loss
+        self.log("val_loss_vars", var_loss, batch_size=out.size(0), sync_dist=True) 
         
         #count var var mismatches
         out_vars = out_vars.unsqueeze(1) - out_vars.unsqueeze(0)
         #count the number of zeros here
         nos = torch.count_nonzero(torch.count_nonzero(out_vars, axis=-1) == 0) - correct_nos
         loss += nos
+        self.log("val_count_loss", nos.to(dtype=torch.float32), batch_size=out.size(0), sync_dist=True) 
 
-        self.log("val_loss", loss, batch_size=out.size(0), sync_dist=True) 
+        self.log("val_loss", loss, batch_size=out.size(0), sync_dist=True, prog_bar=True) 
 
     def training_step(self, batch, batch_idx):
         criterion = nn.MSELoss()
@@ -184,10 +196,15 @@ class LitTransformerStack(L.LightningModule):
 
         loss = criterion(out[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | pad_mask)],
                         target[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | pad_mask)])
+
+        self.log("train_loss_tokens", loss, batch_size=out.size(0), sync_dist=True) 
         
         #take all lambdas into account and compute their difference with the first lambda
         repeat_times = out[lambda_index_mask].reshape(-1, out.size(-1))[1:, :].shape[0]
-        loss += criterion(out[lambda_index_mask].reshape(-1, out.size(-1))[0:1, :].repeat(repeat_times, 1), out[lambda_index_mask].reshape(-1, out.size(-1))[1:, :])
+        lambda_loss = criterion(out[lambda_index_mask].reshape(-1, out.size(-1))[0:1, :].repeat(repeat_times, 1), out[lambda_index_mask].reshape(-1, out.size(-1))[1:, :])
+        loss += lambda_loss
+
+        self.log("train_loss_lambdas", lambda_loss, batch_size=out.size(0), sync_dist=True) 
 
         #contrastive losses on the variables at some point?
         #get the variables only :
@@ -207,7 +224,9 @@ class LitTransformerStack(L.LightningModule):
         correct_nos = torch.count_nonzero(torch.count_nonzero(out_vars - target_vars, axis=-1) == 0)
 
         #make sure on gpu
-        loss += criterion(out_vars, target_vars.detach())
+        var_loss = criterion(out_vars, target_vars.detach())
+        loss += var_loss
+        self.log("train_loss_vars", var_loss, batch_size=out.size(0), sync_dist=True) 
         
         #count var var mismatches
         out_vars = out_vars.unsqueeze(1) - out_vars.unsqueeze(0)
@@ -215,8 +234,18 @@ class LitTransformerStack(L.LightningModule):
         nos = torch.count_nonzero(torch.count_nonzero(out_vars, axis=-1) == 0) - correct_nos
         loss += nos
 
-        #delet all matrices
-        del out_vars, target_vars, out, target, in_embs, target_embs, tokenized, target_tokenized, lambda_index_mask, var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask
+        self.log("train_count_loss",  nos.to(dtype=torch.float32), batch_size=out.size(0), sync_dist=True) 
+
+        self.log("train_loss", loss, batch_size=out.size(0), sync_dist=True, prog_bar=True) 
+
+        # #delet all matrices
+        # del out_vars, target_vars, out, target, in_embs, target_embs, tokenized, target_tokenized, lambda_index_mask, var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask
+        # if self.reference_param is None:
+        #     self.reference_param = copy.deepcopy(self.model.initial_forward)
+        #     self.fin_reference = copy.deepcopy(self.model.final_forward)
+        # else: 
+        #     print("Equality check1 {}".format(torch.count_nonzero(self.model.initial_forward.weight == self.reference_param.weight)))
+        #     print("Equality check2 {}".format(torch.count_nonzero(self.model.final_forward.weight == self.fin_reference.weight)))
 
         return loss   
 
@@ -290,6 +319,8 @@ def train(model, train_loader, val_loader, epochs, lr=0.001, rank=0):
 
                 optimizer.zero_grad()
                 loss.backward()
+
+                #maybe clip some gradients?
                 optimizer.step()
 
             model.eval()
@@ -343,11 +374,14 @@ def ddp_mp_training(rank, world_size):
 
     cleanup()
 
-def main(hparams=None):
+def main(hparams=None, load_chckpnt=False):
     model = TransformerDecoderStack(4, 384, 8, 3072)
-    model = LitTransformerStack(model)
+    if load_chckpnt: 
+        model = LitTransformerStack.load_from_checkpoint(SAVE_DIR+"logs/lightning_logs/version_0/checkpoints/epoch=4-step=485.ckpt",model=model)
+        print("sucesfully loaded in parameters")
+    else: model = LitTransformerStack(model)
 
-    logger = CSVLogger(SAVE_DIR+"logs/")
+    logger = CSVLogger(SAVE_DIR+"logs_after_5/")
     trainer = L.Trainer(max_epochs=5, logger=logger, default_root_dir=SAVE_DIR+"models/")
     train_dataloader, val_dataloader = dataloader.data_init(100)
     trainer.fit(model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
@@ -356,7 +390,7 @@ def main(hparams=None):
 if __name__ == "__main__":
     #make arg parser
     #set visible gpus:
-    os.environ["CUDA_VISIBLE_DEVICES"] = "1, 2, 3"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0, 1, 2, 3"
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", type=int, default=0, help="0 for ddp, 1 for ddp with model parallelism")
@@ -374,7 +408,7 @@ if __name__ == "__main__":
                 nprocs=world_size,
                 join=True)
     else:
-        main()
+        main(load_chckpnt=True)
 
 
     # model = TransformerDecoderStack(6, 384, 12, 3072)
