@@ -10,7 +10,7 @@ from transformers import BertTokenizer, BertModel
 #create a directory where the key is a csv. each row has first column as the raw text sentence, and the second col being the 
 # path to the file that stores all its lambda terms
 
-DATA_PATH = "/home/mishaalk/scratch/data/"
+DATA_PATH = "/w/150/lambda_squad/lambdaBERT/data/"
 
 
 class LambdaTermsDataset(Dataset):

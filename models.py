@@ -9,7 +9,7 @@ import os
 import torch
 
 import lightning as L
-from lightning.pytorch.loggers import CSVLogger
+from lightning.pytorch.loggers import CSVLogger, WandbLogger
 
 import torch.distributed as dist
 import torch.multiprocessing as mp
@@ -19,7 +19,7 @@ from tqdm import tqdm
 import argparse
 import copy
 
-SAVE_DIR = "/home/mishaalk/scratch/data/"
+SAVE_DIR = "/w/150/lambda_squad/lambdaBERT/save/"
 
 ### Distributed Training Modules ###
 def setup(rank, world_size):
@@ -107,67 +107,77 @@ class LitTransformerStack(L.LightningModule):
     def validation_step(self, batch, batch_idx):
         criterion = nn.MSELoss()
         (seq, target_seq) = batch
-        tokenized, in_pad_mask = tokenization.create_out_embeddings(seq)
-        target_tokenized, lambda_index_mask, var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask = tokenization.create_out_embeddings(target_seq, lamda=True)
-
-        in_embs = tokenization.get_bert_emb(tokenized)
-        in_embs[in_pad_mask] = torch.zeros_like(in_embs[0, 0, :])
-
-        target_embs = tokenization.process_bert_lambda(target_tokenized, lambda_index_mask, (var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask), lambda_norm=True, var_norm=True)
         
-        target_embs, in_embs = target_embs.to(self.device), in_embs.to(self.device)
-        lambda_index_mask, var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask = (lambda_index_mask.to(self.device), var_index_mask.to(self.device), var_index_mask_underscore.to(self.device), var_index_mask_no.to(self.device), pad_mask.to(self.device))
+
+        with torch.no_grad():
+            tokenized, in_pad_mask = tokenization.create_out_embeddings(seq)
+            target_tokenized, lambda_index_mask, var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask = tokenization.create_out_embeddings(target_seq, lamda=True)
+
+            tokenization.BERT_MODEL.to(self.device)
+            tokenized.to(self.device)
+
+            in_embs = tokenization.get_bert_emb(tokenized)
+            in_embs[in_pad_mask] = torch.zeros_like(in_embs[0, 0, :])
+
+            target_tokenized.to(self.device)
+            target_embs = tokenization.process_bert_lambda(target_tokenized, lambda_index_mask, (var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask), lambda_norm=True, var_norm=True)
+            
+            target_embs, in_embs = target_embs.to(self.device), in_embs.to(self.device)
+            lambda_index_mask, var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask = (lambda_index_mask.to(self.device), var_index_mask.to(self.device), var_index_mask_underscore.to(self.device), var_index_mask_no.to(self.device), pad_mask.to(self.device))
 
 
-        out = self.model(target_embs[:, :-1, :], in_embs)
-        target = target_embs[:, 1:, :]
+            out = self.model(target_embs[:, :-1, :], in_embs)
+            target = target_embs[:, 1:, :]
+            
+            #no mse for the pads, variables, lambda or anything else. jus tthe actual embeddings
+            #offset the masks by one 
+            lambda_index_mask, var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask = (lambda_index_mask[:, 1:], var_index_mask[:, 1:], var_index_mask_underscore[:, 1:], var_index_mask_no[:, 1:], pad_mask[:, 1:])
+
+            loss = criterion(out[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | pad_mask)],
+                            target[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | pad_mask)])
+
+        # self.log("val_loss_tokens", loss, batch_size=out.size(0), sync_dist=True) 
         
-        #no mse for the pads, variables, lambda or anything else. jus tthe actual embeddings
-        #offset the masks by one 
-        lambda_index_mask, var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask = (lambda_index_mask[:, 1:], var_index_mask[:, 1:], var_index_mask_underscore[:, 1:], var_index_mask_no[:, 1:], pad_mask[:, 1:])
+        # #take all lambdas into account and compute their difference with the first lambda
+        # repeat_times = out[lambda_index_mask].reshape(-1, out.size(-1))[1:, :].shape[0]
+        # lambda_loss = criterion(out[lambda_index_mask].reshape(-1, out.size(-1))[0:1, :].repeat(repeat_times, 1), out[lambda_index_mask].reshape(-1, out.size(-1))[1:, :])
+        # loss += lambda_loss
 
-        loss = criterion(out[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | pad_mask)],
-                        target[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | pad_mask)])
-
-        self.log("val_loss_tokens", loss, batch_size=out.size(0), sync_dist=True) 
+        # self.log("val_loss_lambdas", lambda_loss, batch_size=out.size(0), sync_dist=True) 
         
-        #take all lambdas into account and compute their difference with the first lambda
-        repeat_times = out[lambda_index_mask].reshape(-1, out.size(-1))[1:, :].shape[0]
-        lambda_loss = criterion(out[lambda_index_mask].reshape(-1, out.size(-1))[0:1, :].repeat(repeat_times, 1), out[lambda_index_mask].reshape(-1, out.size(-1))[1:, :])
-        loss += lambda_loss
+        # #contrastive losses on the variables at some point?
+        # #get the variables only :
+        # out_vars, target_vars = out[var_index_mask_no.type(torch.bool)], target[var_index_mask_no.type(torch.bool)]
 
-        self.log("val_loss_lambdas", lambda_loss, batch_size=out.size(0), sync_dist=True) 
+        # #get the first indices of the variables involved. 
+        # flattened_var_mask = var_index_mask_no[var_index_mask_no != 0]
+        # _, reverse_indices, counts = torch.unique(flattened_var_mask, return_inverse=True, return_counts=True, sorted=True)
+        # ind_sorted = torch.argsort(reverse_indices.to(torch.uint8), stable=True)
+        # ind_sorted = ind_sorted.to(self.device)
+        # cum_sum = counts.cumsum(0) - 1
+        # cum_sum = torch.cat([torch.tensor([0]).to(self.device), cum_sum])
+        # first_indices = ind_sorted[cum_sum]
         
-        #contrastive losses on the variables at some point?
-        #get the variables only :
-        out_vars, target_vars = out[var_index_mask_no.type(torch.bool)], target[var_index_mask_no.type(torch.bool)]
+        # #mseloss on this
+        # target_vars = out_vars[first_indices][reverse_indices] #reference embeddings arrangement
+        # correct_nos = torch.count_nonzero(torch.count_nonzero(out_vars - target_vars, axis=-1) == 0)
 
-        #get the first indices of the variables involved. 
-        flattened_var_mask = var_index_mask_no[var_index_mask_no != 0]
-        _, reverse_indices, counts = torch.unique(flattened_var_mask, return_inverse=True, return_counts=True, sorted=True)
-        ind_sorted = torch.argsort(reverse_indices.to(torch.uint8), stable=True)
-        ind_sorted = ind_sorted.to(self.device)
-        cum_sum = counts.cumsum(0) - 1
-        cum_sum = torch.cat([torch.tensor([0]).to(self.device), cum_sum])
-        first_indices = ind_sorted[cum_sum]
+        # #make sure on gpu
+        # var_loss = criterion(out_vars, target_vars.detach())
+        # loss += var_loss
+        # self.log("val_loss_vars", var_loss, batch_size=out.size(0), sync_dist=True) 
         
-        #mseloss on this
-        target_vars = out_vars[first_indices][reverse_indices] #reference embeddings arrangement
-        correct_nos = torch.count_nonzero(torch.count_nonzero(out_vars - target_vars, axis=-1) == 0)
+        # #count var var mismatches
+        # out_vars = out_vars.unsqueeze(1) - out_vars.unsqueeze(0)
+        # #count the number of zeros here
+        # nos = torch.count_nonzero(torch.count_nonzero(out_vars, axis=-1) == 0) - correct_nos
+        # loss += nos
+        # self.log("val_count_loss", nos.to(dtype=torch.float32), batch_size=out.size(0), sync_dist=True) 
 
-        #make sure on gpu
-        var_loss = criterion(out_vars, target_vars.detach())
-        loss += var_loss
-        self.log("val_loss_vars", var_loss, batch_size=out.size(0), sync_dist=True) 
-        
-        #count var var mismatches
-        out_vars = out_vars.unsqueeze(1) - out_vars.unsqueeze(0)
-        #count the number of zeros here
-        nos = torch.count_nonzero(torch.count_nonzero(out_vars, axis=-1) == 0) - correct_nos
-        loss += nos
-        self.log("val_count_loss", nos.to(dtype=torch.float32), batch_size=out.size(0), sync_dist=True) 
+        # self.log("val_loss", loss, batch_size=out.size(0), sync_dist=True, prog_bar=True) 
+        self.log("val_loss", loss.mean(), batch_size=out.size(0), sync_dist=True, prog_bar=True) 
 
-        self.log("val_loss", loss, batch_size=out.size(0), sync_dist=True, prog_bar=True) 
+        return loss
 
     def training_step(self, batch, batch_idx):
         criterion = nn.MSELoss()
@@ -176,17 +186,21 @@ class LitTransformerStack(L.LightningModule):
         #tokenize the sqequences
         tokenized, in_pad_mask = tokenization.create_out_embeddings(seq)
         target_tokenized, lambda_index_mask, var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask = tokenization.create_out_embeddings(target_seq, lamda=True)
-        
+
+        tokenization.BERT_MODEL.to(self.device)
+        tokenized.to(self.device)
         #get the bert embeddings
         in_embs = tokenization.get_bert_emb(tokenized)
         #mask out the pads:
         in_embs[in_pad_mask] = torch.zeros_like(in_embs[0, 0, :])
 
         #get the bert embeddings for the target sequence
-        target_embs = tokenization.process_bert_lambda(target_tokenized, lambda_index_mask, (var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask), lambda_norm=True, var_norm=True)
-        #in_embs will be our encoder embs
-        target_embs, in_embs = target_embs.to(self.device), in_embs.to(self.device)
+        target_tokenized.to(self.device)
         lambda_index_mask, var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask = (lambda_index_mask.to(self.device), var_index_mask.to(self.device), var_index_mask_underscore.to(self.device), var_index_mask_no.to(self.device), pad_mask.to(self.device))
+        target_embs = tokenization.process_bert_lambda(target_tokenized, lambda_index_mask, (var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask), lambda_norm=True, var_norm=True)
+        var_index_mask_no = torch.roll(var_index_mask_no, -1, 1) # shift one back coz nps and _ have been moved to the back
+        tokenization.BERT_MODEL.to('cpu')
+        
         out = self.model(target_embs[:, :-1, :], in_embs)
         target = target_embs[:, 1:, :]
 
@@ -199,180 +213,39 @@ class LitTransformerStack(L.LightningModule):
 
         self.log("train_loss_tokens", loss, batch_size=out.size(0), sync_dist=True) 
         
-        #take all lambdas into account and compute their difference with the first lambda
-        repeat_times = out[lambda_index_mask].reshape(-1, out.size(-1))[1:, :].shape[0]
-        lambda_loss = criterion(out[lambda_index_mask].reshape(-1, out.size(-1))[0:1, :].repeat(repeat_times, 1), out[lambda_index_mask].reshape(-1, out.size(-1))[1:, :])
-        loss += lambda_loss
+        #mse on lambdas
+        if out[lambda_index_mask].reshape(-1, out.size(-1)).shape[0] != 0:
+            lambda_loss = criterion(out[lambda_index_mask].reshape(-1, out.size(-1)), target[lambda_index_mask].reshape(-1, out.size(-1))) # has to be consisten across batches
 
-        self.log("train_loss_lambdas", lambda_loss, batch_size=out.size(0), sync_dist=True) 
+            ##inconsisten version:
+            # lambda_loss = criterion(out[lambda_index_mask].reshape(-1, out.size(-1))[0:1, :].repeat(repeat_times, 1), out[lambda_index_mask].reshape(-1, out.size(-1))[1:, :])
+            loss += lambda_loss.mean()
 
-        #contrastive losses on the variables at some point?
-        #get the variables only :
-        out_vars, target_vars = out[var_index_mask_no.type(torch.bool)], target[var_index_mask_no.type(torch.bool)]
+            self.log("train_loss_lambdas", lambda_loss, batch_size=out.size(0), sync_dist=True) 
 
-        #get the first indices of the variables involved. 
-        flattened_var_mask = var_index_mask_no[var_index_mask_no != 0]
-        _, reverse_indices, counts = torch.unique(flattened_var_mask, return_inverse=True, return_counts=True, sorted=True)
-        ind_sorted = torch.argsort(reverse_indices.to(torch.uint8), stable=True)
-        ind_sorted = ind_sorted.to(self.device)
-        cum_sum = counts.cumsum(0) - 1
-        cum_sum = torch.cat([torch.tensor([0]).to(self.device), cum_sum])
-        first_indices = ind_sorted[cum_sum]
-        
-        #mseloss on this
-        target_vars = out_vars[first_indices][reverse_indices] #reference embeddings arrangement
-        correct_nos = torch.count_nonzero(torch.count_nonzero(out_vars - target_vars, axis=-1) == 0)
+            #loss on variables: compute the variance on the variables
+            var_hot = nn.functional.one_hot(var_index_mask_no.long(), num_classes=torch.unique(var_index_mask_no).size(0))
+            out_vars = out.unsqueeze(1) * var_hot.transpose(1, 2).unsqueeze(-1)
+            mean_rescale = (out_vars.shape[-2]/torch.count_nonzero(out_vars.sum(dim=-1, keepdim=True), dim=-2)).unsqueeze(-1).detach()
+            out_var_mean = out_vars.mean(dim=-2, keepdim=True) #* mean_rescale # average on the tokens
+            # print(torch.sum(out_var_mean * var_hot.transpose(1, 2).unsqueeze(-1)))
+            out_var_difference = out_vars - (out_var_mean * var_hot.transpose(1, 2).unsqueeze(-1))
+            # print(out_var_difference.sum())
+            var_loss = torch.mean(out_var_difference**2, dim=-2, keepdim=True) #* mean_rescale
+            # print(var_loss.sum())
+            # var_loss = torch.sqrt(var_loss)
+            var_loss = torch.mean(torch.sum(var_loss.sum(dim=-1).squeeze(-1), dim=-1))
+            # print(var_loss.sum())
+            loss += var_loss
 
-        #make sure on gpu
-        var_loss = criterion(out_vars, target_vars.detach())
-        loss += var_loss
-        self.log("train_loss_vars", var_loss, batch_size=out.size(0), sync_dist=True) 
-        
-        #count var var mismatches
-        out_vars = out_vars.unsqueeze(1) - out_vars.unsqueeze(0)
-        #count the number of zeros here
-        nos = torch.count_nonzero(torch.count_nonzero(out_vars, axis=-1) == 0) - correct_nos
-        loss += nos
-
-        self.log("train_count_loss",  nos.to(dtype=torch.float32), batch_size=out.size(0), sync_dist=True) 
-
+            self.log("train_loss_vars", var_loss.mean(), batch_size=out.size(0), sync_dist=True)
         self.log("train_loss", loss, batch_size=out.size(0), sync_dist=True, prog_bar=True) 
-
-        # #delet all matrices
-        # del out_vars, target_vars, out, target, in_embs, target_embs, tokenized, target_tokenized, lambda_index_mask, var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask
-        # if self.reference_param is None:
-        #     self.reference_param = copy.deepcopy(self.model.initial_forward)
-        #     self.fin_reference = copy.deepcopy(self.model.final_forward)
-        # else: 
-        #     print("Equality check1 {}".format(torch.count_nonzero(self.model.initial_forward.weight == self.reference_param.weight)))
-        #     print("Equality check2 {}".format(torch.count_nonzero(self.model.final_forward.weight == self.fin_reference.weight)))
 
         return loss   
 
     def configure_optimizers(self):
         optimizer = optim.Adam(self.parameters(), lr=1e-3)
         return optimizer
-
-
-def train(model, train_loader, val_loader, epochs, lr=0.001, rank=0):
-
-    with torch.device(rank):
-        optimizer = optim.Adam(model.parameters(), lr=lr)
-        criterion = nn.MSELoss()
-        for epoch in range(epochs):
-            model.train()
-            bar = tqdm(enumerate(train_loader), unit="batch", total=len(train_loader))
-            for i, (seq, target_seq) in bar:
-                #tokenize the sqequences
-                tokenized, in_pad_mask = tokenization.create_out_embeddings(seq)
-                target_tokenized, lambda_index_mask, var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask = tokenization.create_out_embeddings(target_seq, lamda=True)
-                
-                #get the bert embeddings
-                in_embs = tokenization.get_bert_emb(tokenized, rank)
-                #mask out the pads:
-                in_embs[in_pad_mask] = torch.zeros_like(in_embs[0, 0, :])
-
-                #get the bert embeddings for the target sequence
-                target_embs = tokenization.process_bert_lambda(target_tokenized, lambda_index_mask, (var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask), rank, lambda_norm=True, var_norm=True)
-                #in_embs will be our encoder embs
-                out = model(target_embs[:, :-1, :], in_embs)
-                target = target_embs[:, 1:, :]
-
-                #no mse for the pads, variables, lambda or anything else. jus tthe actual embeddings
-                #offset the masks by one 
-                lambda_index_mask, var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask = (lambda_index_mask[:, 1:], var_index_mask[:, 1:], var_index_mask_underscore[:, 1:], var_index_mask_no[:, 1:], pad_mask[:, 1:])
-
-                loss = criterion(out[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | pad_mask)],
-                                target[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | pad_mask)])
-                
-                #take all lambdas into account and compute their difference with the first lambda
-                repeat_times = out[lambda_index_mask].reshape(-1, out.size(-1))[1:, :].shape[0]
-                loss += criterion(out[lambda_index_mask].reshape(-1, out.size(-1))[0:1, :].repeat(repeat_times, 1), out[lambda_index_mask].reshape(-1, out.size(-1))[1:, :])
-
-                #contrastive losses on the variables at some point?
-                #get the variables only :
-                out_vars, target_vars = out[var_index_mask_no.type(torch.bool)], target[var_index_mask_no.type(torch.bool)]
-
-                #get the first indices of the variables involved. 
-                flattened_var_mask = var_index_mask_no[var_index_mask_no != 0]
-                _, reverse_indices, counts = torch.unique(flattened_var_mask, return_inverse=True, return_counts=True, sorted=True)
-                ind_sorted = torch.argsort(reverse_indices.to(torch.uint8), stable=True)
-                cum_sum = counts.cumsum(0) - 1
-                cum_sum = torch.cat([torch.tensor([0]), cum_sum])
-                first_indices = ind_sorted[cum_sum]
-                
-                #mseloss on this
-                target_vars = out_vars[first_indices][reverse_indices] #reference embeddings arrangement
-                correct_nos = torch.count_nonzero(torch.count_nonzero(out_vars - target_vars, axis=-1) == 0)
-
-                #make sure on gpu
-                loss += criterion(out_vars, target_vars.detach())
-                
-                #count var var mismatches
-                out_vars = out_vars.unsqueeze(1) - out_vars.unsqueeze(0)
-                #count the number of zeros here
-                nos = torch.count_nonzero(torch.count_nonzero(out_vars, axis=-1) == 0) - correct_nos
-                loss += nos
-
-                if i % 100 == 0:
-                    bar.set_description(f"Epoch {epoch} Iteration {i} Loss: {loss.item()}")
-
-                optimizer.zero_grad()
-                loss.backward()
-
-                #maybe clip some gradients?
-                optimizer.step()
-
-            model.eval()
-            with torch.no_grad():
-                for i, (seq, target_seq) in enumerate(val_loader):
-                    tokenized, in_pad_mask = tokenization.create_out_embeddings(seq)
-                    target_tokenized, lambda_index_mask, var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask = tokenization.create_out_embeddings(target_seq, lamda=True)
-
-                    in_embs = tokenization.get_bert_emb(tokenized)
-                    in_embs[in_pad_mask] = torch.zeros_like(in_embs[0, 0, :])
-
-                    target_embs = tokenization.process_bert_lambda(target_tokenized, lambda_index_mask, var_index_mask, lambda_norm=True, var_norm=True)
-                    out = model(target_embs[:, -1, :], in_embs)
-                    target = target_embs[:, 1:, :]
-                    loss = criterion(out, target)
-
-                    bar.set_description(f"Epoch {epoch} Validation Loss: {loss.item()}")
-    return model
-
-def ddp_training(rank, world_size):
-    setup(rank, world_size)
-    model = TransformerDecoderStack(4, 384, 8, 3072).to(rank)
-    ddp_model = DDP(model, device_ids=[rank])
-
-    train_dataloader, val_dataloader = dataloader.data_init(100)
-
-    train(ddp_model, train_dataloader, val_dataloader, 10, rank=rank)
-    
-    cleanup()
-
-def ddp_mp_training(rank, world_size):
-    setup(rank, world_size)
-    model = TransformerDecoderStack(4, 768, 8, 3072, [i*2 +1 for i in range(rank)]) # alternate the gpus
-    ddp_model = DDP(model)
-    
-    #checkpointing
-    CHECKPOINT_PATH = SAVE_DIR + "models/model.checkpoint"
-    if rank == 0:
-        torch.save(model.state_dict(), CHECKPOINT_PATH)
-    
-    # Use a barrier() to make sure that process 1 loads the model after process
-    # 0 saves it.
-    dist.barrier()
-    # configure map_location properly
-    map_location = {'cuda:%d' % 0: 'cuda:%d' % rank} #move from 0 to current rank
-    ddp_model.load_state_dict(
-        torch.load(CHECKPOINT_PATH, map_location=map_location))
-
-    train_dataloader, val_dataloader = dataloader.data_init(100)
-    train(ddp_model, train_dataloader, val_dataloader, 10)
-
-    cleanup()
 
 def main(hparams=None, load_chckpnt=False):
     model = TransformerDecoderStack(4, 384, 8, 3072)
@@ -381,34 +254,25 @@ def main(hparams=None, load_chckpnt=False):
         print("sucesfully loaded in parameters")
     else: model = LitTransformerStack(model)
 
-    logger = CSVLogger(SAVE_DIR+"logs_after_5/")
-    trainer = L.Trainer(max_epochs=5, logger=logger, default_root_dir=SAVE_DIR+"models/")
-    train_dataloader, val_dataloader = dataloader.data_init(100)
+    logger = WandbLogger(log_model="all", project="lambdaBERT", entity="mishaalkandapath") #CSVLogger(SAVE_DIR+"logs_after_5/")
+    trainer = L.Trainer(max_epochs=5, num_sanity_val_steps=0, logger=logger, default_root_dir=SAVE_DIR+"models/")
+    train_dataloader, val_dataloader = dataloader.data_init(10)
     trainer.fit(model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
 
 
 if __name__ == "__main__":
     #make arg parser
     #set visible gpus:
-    os.environ["CUDA_VISIBLE_DEVICES"] = "0, 1, 2, 3"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+    os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+    L.seed_everything(0)
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", type=int, default=0, help="0 for ddp, 1 for ddp with model parallelism")
     parser.add_argument("--d_model", type=int, default=384, help="Model Dimension")
 
     args = parser.parse_args()
-    
-    if args.mode == 0:
-        mp.spawn(ddp_training, args=(2, ), nprocs=2, join=True) # world_size = 2
-    elif args.mode == 1:
-        n_gpus = torch.cuda.device_count()
-        world_size = n_gpus//2
-        mp.spawn(ddp_mp_training,
-                args=(world_size,),
-                nprocs=world_size,
-                join=True)
-    else:
-        main(load_chckpnt=True)
+
+    main(load_chckpnt=False)
 
 
     # model = TransformerDecoderStack(6, 384, 12, 3072)
