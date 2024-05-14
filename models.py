@@ -120,11 +120,11 @@ class LitTransformerStack(L.LightningModule):
             in_embs[in_pad_mask] = torch.zeros_like(in_embs[0, 0, :])
 
             target_tokenized.to(self.device)
-            target_embs = tokenization.process_bert_lambda(target_tokenized, lambda_index_mask, (var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask), lambda_norm=True, var_norm=True)
-            
-            target_embs, in_embs = target_embs.to(self.device), in_embs.to(self.device)
             lambda_index_mask, var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask = (lambda_index_mask.to(self.device), var_index_mask.to(self.device), var_index_mask_underscore.to(self.device), var_index_mask_no.to(self.device), pad_mask.to(self.device))
-
+            target_embs = tokenization.process_bert_lambda(target_tokenized, lambda_index_mask, (var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask), lambda_norm=True, var_norm=True)
+            target_embs, in_embs = target_embs.to(self.device), in_embs.to(self.device)
+            var_index_mask_no = torch.roll(var_index_mask_no, -1, 1) # shift one back coz nps and _ have been moved to the back
+            tokenization.BERT_MODEL.to('cpu')
 
             out = self.model(target_embs[:, :-1, :], in_embs)
             target = target_embs[:, 1:, :]
@@ -135,46 +135,41 @@ class LitTransformerStack(L.LightningModule):
 
             loss = criterion(out[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | pad_mask)],
                             target[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | pad_mask)])
+            
+            self.log("val_loss_tokens", loss, batch_size=out.size(0), sync_dist=True)
+            if out[lambda_index_mask].reshape(-1, out.size(-1)).shape[0] != 0:
+                lambda_loss = criterion(out[lambda_index_mask].reshape(-1, out.size(-1)), target[lambda_index_mask].reshape(-1, out.size(-1))) # has to be consisten across batches
 
-        # self.log("val_loss_tokens", loss, batch_size=out.size(0), sync_dist=True) 
-        
-        # #take all lambdas into account and compute their difference with the first lambda
-        # repeat_times = out[lambda_index_mask].reshape(-1, out.size(-1))[1:, :].shape[0]
-        # lambda_loss = criterion(out[lambda_index_mask].reshape(-1, out.size(-1))[0:1, :].repeat(repeat_times, 1), out[lambda_index_mask].reshape(-1, out.size(-1))[1:, :])
-        # loss += lambda_loss
+                ##inconsisten version:
+                # lambda_loss = criterion(out[lambda_index_mask].reshape(-1, out.size(-1))[0:1, :].repeat(repeat_times, 1), out[lambda_index_mask].reshape(-1, out.size(-1))[1:, :])
+                loss += lambda_loss.mean()
 
-        # self.log("val_loss_lambdas", lambda_loss, batch_size=out.size(0), sync_dist=True) 
-        
-        # #contrastive losses on the variables at some point?
-        # #get the variables only :
-        # out_vars, target_vars = out[var_index_mask_no.type(torch.bool)], target[var_index_mask_no.type(torch.bool)]
+                self.log("val_loss_lambdas", lambda_loss, batch_size=out.size(0), sync_dist=True) 
 
-        # #get the first indices of the variables involved. 
-        # flattened_var_mask = var_index_mask_no[var_index_mask_no != 0]
-        # _, reverse_indices, counts = torch.unique(flattened_var_mask, return_inverse=True, return_counts=True, sorted=True)
-        # ind_sorted = torch.argsort(reverse_indices.to(torch.uint8), stable=True)
-        # ind_sorted = ind_sorted.to(self.device)
-        # cum_sum = counts.cumsum(0) - 1
-        # cum_sum = torch.cat([torch.tensor([0]).to(self.device), cum_sum])
-        # first_indices = ind_sorted[cum_sum]
-        
-        # #mseloss on this
-        # target_vars = out_vars[first_indices][reverse_indices] #reference embeddings arrangement
-        # correct_nos = torch.count_nonzero(torch.count_nonzero(out_vars - target_vars, axis=-1) == 0)
+                #loss on variables: compute the variance on the variables
+                var_hot = nn.functional.one_hot(var_index_mask_no.long(), num_classes=torch.unique(var_index_mask_no).size(0))
+                out_vars = out.unsqueeze(1) * var_hot.transpose(1, 2).unsqueeze(-1)
+                out_var_mean = out_vars.mean(dim=-2, keepdim=True) #* mean_rescale # average on the tokens
+                # print(torch.sum(out_var_mean * var_hot.transpose(1, 2).unsqueeze(-1)))
+                out_var_difference = out_vars - (out_var_mean * var_hot.transpose(1, 2).unsqueeze(-1))
+                # print(out_var_difference.sum())
+                var_loss = torch.mean(out_var_difference**2, dim=-2, keepdim=True) #* mean_rescale
+                # print(var_loss.sum())
+                # var_loss = torch.sqrt(var_loss)
+                var_loss = torch.mean(torch.sum(var_loss.sum(dim=-1).squeeze(-1), dim=-1))
+                # print(var_loss.sum())
+                loss += var_loss
 
-        # #make sure on gpu
-        # var_loss = criterion(out_vars, target_vars.detach())
-        # loss += var_loss
-        # self.log("val_loss_vars", var_loss, batch_size=out.size(0), sync_dist=True) 
-        
-        # #count var var mismatches
-        # out_vars = out_vars.unsqueeze(1) - out_vars.unsqueeze(0)
-        # #count the number of zeros here
-        # nos = torch.count_nonzero(torch.count_nonzero(out_vars, axis=-1) == 0) - correct_nos
-        # loss += nos
-        # self.log("val_count_loss", nos.to(dtype=torch.float32), batch_size=out.size(0), sync_dist=True) 
+                self.log("val_loss_vars", var_loss.mean(), batch_size=out.size(0), sync_dist=True)
 
-        # self.log("val_loss", loss, batch_size=out.size(0), sync_dist=True, prog_bar=True) 
+                #orthogonality loss:
+                ortho_loss = out_var_mean.squeeze(-2) @ out_var_mean.squeeze(-2).transpose(1, 2)
+                #mask diagonals out
+                ortho_loss = ortho_loss * (1 - torch.eye(ortho_loss.size(-1)).to(ortho_loss.device))
+                loss += ortho_loss.mean()
+
+                self.log("val_loss_ortho", ortho_loss.mean(), batch_size=out.size(0), sync_dist=True)
+
         self.log("val_loss", loss.mean(), batch_size=out.size(0), sync_dist=True, prog_bar=True) 
 
         return loss
@@ -210,6 +205,7 @@ class LitTransformerStack(L.LightningModule):
 
         loss = criterion(out[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | pad_mask)],
                         target[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | pad_mask)])
+        
 
         self.log("train_loss_tokens", loss, batch_size=out.size(0), sync_dist=True) 
         
@@ -239,12 +235,22 @@ class LitTransformerStack(L.LightningModule):
             loss += var_loss
 
             self.log("train_loss_vars", var_loss.mean(), batch_size=out.size(0), sync_dist=True)
+            
+            #orthogonality loss:
+            
+            ortho_loss = out_var_mean.squeeze(-2) @ out_var_mean.squeeze(-2).transpose(1, 2)
+            #mask diagonals out
+            ortho_loss = ortho_loss * (1 - torch.eye(ortho_loss.size(-1)).to(ortho_loss.device))
+            loss += ortho_loss.mean()
+
+            self.log("train_loss_ortho", ortho_loss.mean(), batch_size=out.size(0), sync_dist=True)
+
         self.log("train_loss", loss, batch_size=out.size(0), sync_dist=True, prog_bar=True) 
 
         return loss   
 
     def configure_optimizers(self):
-        optimizer = optim.Adam(self.parameters(), lr=1e-3)
+        optimizer = optim.Adam(self.parameters(), lr=1e-4)
         return optimizer
 
 def main(hparams=None, load_chckpnt=False):
@@ -255,7 +261,7 @@ def main(hparams=None, load_chckpnt=False):
     else: model = LitTransformerStack(model)
 
     logger = WandbLogger(log_model="all", project="lambdaBERT", entity="mishaalkandapath") #CSVLogger(SAVE_DIR+"logs_after_5/")
-    trainer = L.Trainer(max_epochs=5, num_sanity_val_steps=0, logger=logger, default_root_dir=SAVE_DIR+"models/")
+    trainer = L.Trainer(max_epochs=50, num_sanity_val_steps=0, logger=logger, default_root_dir=SAVE_DIR+"models/")
     train_dataloader, val_dataloader = dataloader.data_init(10)
     trainer.fit(model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
 
@@ -263,7 +269,7 @@ def main(hparams=None, load_chckpnt=False):
 if __name__ == "__main__":
     #make arg parser
     #set visible gpus:
-    os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "2"
     os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
     L.seed_everything(0)
 
