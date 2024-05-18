@@ -62,8 +62,9 @@ class TransformerDecoderStack(nn.Module):
         else:
             self.d_model = d_model
             self.num_layers = num_layers
-            self.initial_forward = nn.Linear(768, d_model).cuda()
-            self.final_forward = nn.Linear(d_model, 768).cuda()
+            self.initial_forward = nn.Linear(768, d_model)
+            self.final_forward = nn.Linear(d_model, 768)
+            self.classifier_forward = nn.Linear(d_model, 3)
 
             self.decoders = nn.ModuleList([nn.TransformerDecoderLayer(d_model, num_heads, dropout=dropout, batch_first=True).cuda()
                                             for _ in range(self.num_layers)])
@@ -85,6 +86,8 @@ class TransformerDecoderStack(nn.Module):
         #mask the sequence of autoregressivity
         tgt_mask = torch.nn.Transformer.generate_square_subsequent_mask(seq.size(1)).to(emb.device)
 
+        final_class_emb_help = None
+
         for i in range(self.num_layers):
             outputs = self.decoders[i](outputs, emb, tgt_mask=tgt_mask)
 
@@ -92,10 +95,15 @@ class TransformerDecoderStack(nn.Module):
             if (i+1) % self.layers_in_a_gpu == 0 and i != self.num_layers - 1 and self.mode:
                 outputs = outputs.to(getattr(self, f"device_{i//self.layers_in_a_gpu}"))
                 emb = emb.to(getattr(self, f"device_{i//self.layers_in_a_gpu}"))
+            if final_class_emb_help is None and i == self.num_layers - 4:
+                final_class_emb_help = outputs
+            elif i < self.num_layers - 4:
+                final_class_emb_help += outputs
 
         outputs = self.final_forward(outputs)
-        return outputs
-
+        classified_class = self.classifier_forward(final_class_emb_help)
+        return outputs, classified_class
+    
 class LitTransformerStack(L.LightningModule):
     def __init__(self, model):
         super().__init__()
@@ -106,6 +114,7 @@ class LitTransformerStack(L.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         criterion = nn.MSELoss()
+        class_criterion = nn.CrossEntropyLoss()
         (seq, target_seq) = batch
         
 
@@ -126,7 +135,7 @@ class LitTransformerStack(L.LightningModule):
             var_index_mask_no = torch.roll(var_index_mask_no, -1, 1) # shift one back coz nps and _ have been moved to the back
             tokenization.BERT_MODEL.to('cpu')
 
-            out = self.model(target_embs[:, :-1, :], in_embs)
+            out, classified_class = self.model(target_embs[:, :-1, :], in_embs)
             target = target_embs[:, 1:, :]
             
             #no mse for the pads, variables, lambda or anything else. jus tthe actual embeddings
@@ -145,6 +154,12 @@ class LitTransformerStack(L.LightningModule):
                 loss += lambda_loss.mean()
 
                 self.log("val_loss_lambdas", lambda_loss, batch_size=out.size(0), sync_dist=True) 
+
+                # gt_cls_mask = var_index_mask_no.type(torch.bool) + 2*lambda_index_mask.type(torch.bool)
+                # classifier_loss = class_criterion(classified_class.view(-1, 3), gt_cls_mask.view(-1))
+                # loss += classifier_loss
+
+                # self.log("train_loss_classifier", classifier_loss, batch_size=out.size(0), sync_dist=True)
 
                 #loss on variables: compute the variance on the variables
                 var_hot = nn.functional.one_hot(var_index_mask_no.long(), num_classes=torch.unique(var_index_mask_no).size(0))
@@ -176,6 +191,8 @@ class LitTransformerStack(L.LightningModule):
 
     def training_step(self, batch, batch_idx):
         criterion = nn.MSELoss()
+
+        class_criterion = nn.CrossEntropyLoss()
         (seq, target_seq) = batch
 
         #tokenize the sqequences
@@ -196,18 +213,18 @@ class LitTransformerStack(L.LightningModule):
         var_index_mask_no = torch.roll(var_index_mask_no, -1, 1) # shift one back coz nps and _ have been moved to the back
         tokenization.BERT_MODEL.to('cpu')
         
-        out = self.model(target_embs[:, :-1, :], in_embs)
+        out, classified_class = self.model(target_embs[:, :-1, :], in_embs)
         target = target_embs[:, 1:, :]
 
         #no mse for the pads, variables, lambda or anything else. jus tthe actual embeddings
         #offset the masks by one 
         lambda_index_mask, var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask = (lambda_index_mask[:, 1:], var_index_mask[:, 1:], var_index_mask_underscore[:, 1:], var_index_mask_no[:, 1:], pad_mask[:, 1:])
 
-        loss = criterion(out[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | pad_mask)],
+        loss = 1e-2 * criterion(out[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | pad_mask)],
                         target[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | pad_mask)])
         
 
-        self.log("train_loss_tokens", loss, batch_size=out.size(0), sync_dist=True) 
+        self.log("train_loss_tokens", loss/1e-2, batch_size=out.size(0), sync_dist=True) 
         
         #mse on lambdas
         if out[lambda_index_mask].reshape(-1, out.size(-1)).shape[0] != 0:
@@ -218,6 +235,11 @@ class LitTransformerStack(L.LightningModule):
             loss += lambda_loss.mean()
 
             self.log("train_loss_lambdas", lambda_loss, batch_size=out.size(0), sync_dist=True) 
+            # gt_cls_mask = var_index_mask_no.type(torch.bool) + 2*lambda_index_mask.type(torch.bool)
+            # classifier_loss = class_criterion(classified_class.view(-1, 3), gt_cls_mask.view(-1))
+            # loss += classifier_loss
+
+            # self.log("train_loss_classifier", classifier_loss, batch_size=out.size(0), sync_dist=True)
 
             #loss on variables: compute the variance on the variables
             var_hot = nn.functional.one_hot(var_index_mask_no.long(), num_classes=torch.unique(var_index_mask_no).size(0))
@@ -241,7 +263,7 @@ class LitTransformerStack(L.LightningModule):
             ortho_loss = out_var_mean.squeeze(-2) @ out_var_mean.squeeze(-2).transpose(1, 2)
             #mask diagonals out
             ortho_loss = ortho_loss * (1 - torch.eye(ortho_loss.size(-1)).to(ortho_loss.device))
-            loss += ortho_loss.mean()
+            loss += 1e-2*ortho_loss.mean()
 
             self.log("train_loss_ortho", ortho_loss.mean(), batch_size=out.size(0), sync_dist=True)
 
@@ -261,7 +283,7 @@ def main(hparams=None, load_chckpnt=False):
     else: model = LitTransformerStack(model)
 
     logger = WandbLogger(log_model="all", project="lambdaBERT", entity="mishaalkandapath") #CSVLogger(SAVE_DIR+"logs_after_5/")
-    trainer = L.Trainer(max_epochs=50, num_sanity_val_steps=0, logger=logger, default_root_dir=SAVE_DIR+"models/")
+    trainer = L.Trainer(max_epochs=50, log_every_n_steps=1, num_sanity_val_steps=0, logger=logger, default_root_dir=SAVE_DIR+"models/")
     train_dataloader, val_dataloader = dataloader.data_init(10)
     trainer.fit(model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
 
