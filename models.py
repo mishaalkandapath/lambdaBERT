@@ -65,6 +65,9 @@ class TransformerDecoderStack(nn.Module):
             self.initial_forward = nn.Linear(768, d_model)
             self.final_forward = nn.Linear(d_model, 768)
             self.classifier_forward = nn.Linear(d_model, 3)
+            self.reg_forward1 = nn.Linear(d_model, d_model)
+            self.reg_forward2 = nn.Linear(d_model, 2)
+            self.reg_act = nn.ReLU()
 
             self.decoders = nn.ModuleList([nn.TransformerDecoderLayer(d_model, num_heads, dropout=dropout, batch_first=True).cuda()
                                             for _ in range(self.num_layers)])
@@ -102,7 +105,9 @@ class TransformerDecoderStack(nn.Module):
 
         outputs = self.final_forward(outputs)
         classified_class = self.classifier_forward(final_class_emb_help)
-        return outputs, classified_class
+
+        var_emb = self.reg_forward2(self.reg_act(self.reg_forward1(final_class_emb_help)))
+        return outputs, classified_class, var_emb
     
 class LitTransformerStack(L.LightningModule):
     def __init__(self, model):
@@ -135,7 +140,7 @@ class LitTransformerStack(L.LightningModule):
             var_index_mask_no = torch.roll(var_index_mask_no, -1, 1) # shift one back coz nps and _ have been moved to the back
             tokenization.BERT_MODEL.to('cpu')
 
-            out, classified_class = self.model(target_embs[:, :-1, :], in_embs)
+            out, classified_class, var_reg = self.model(target_embs[:, :-1, :], in_embs)
             target = target_embs[:, 1:, :]
             
             #no mse for the pads, variables, lambda or anything else. jus tthe actual embeddings
@@ -147,23 +152,24 @@ class LitTransformerStack(L.LightningModule):
             
             self.log("val_loss_tokens", loss, batch_size=out.size(0), sync_dist=True)
             if out[lambda_index_mask].reshape(-1, out.size(-1)).shape[0] != 0:
-                lambda_loss = criterion(out[lambda_index_mask].reshape(-1, out.size(-1)), target[lambda_index_mask].reshape(-1, out.size(-1))) # has to be consisten across batches
+                # lambda_loss = criterion(out[lambda_index_mask].reshape(-1, out.size(-1)), target[lambda_index_mask].reshape(-1, out.size(-1))) # has to be consisten across batches
 
                 ##inconsisten version:
                 # lambda_loss = criterion(out[lambda_index_mask].reshape(-1, out.size(-1))[0:1, :].repeat(repeat_times, 1), out[lambda_index_mask].reshape(-1, out.size(-1))[1:, :])
-                loss += lambda_loss.mean()
+                # loss += lambda_loss.mean()
 
-                self.log("val_loss_lambdas", lambda_loss, batch_size=out.size(0), sync_dist=True) 
+                # self.log("val_loss_lambdas", lambda_loss, batch_size=out.size(0), sync_dist=True) 
 
-                # gt_cls_mask = var_index_mask_no.type(torch.bool) + 2*lambda_index_mask.type(torch.bool)
-                # classifier_loss = class_criterion(classified_class.view(-1, 3), gt_cls_mask.view(-1))
-                # loss += classifier_loss
+                gt_cls_mask = var_index_mask_no.type(torch.bool) + 2*lambda_index_mask.type(torch.bool)
+                classifier_loss = class_criterion(classified_class.view(-1, 3), gt_cls_mask.view(-1))
+                loss += classifier_loss
 
-                # self.log("train_loss_classifier", classifier_loss, batch_size=out.size(0), sync_dist=True)
+                self.log("train_loss_classifier", classifier_loss, batch_size=out.size(0), sync_dist=True)
 
                 #loss on variables: compute the variance on the variables
                 var_hot = nn.functional.one_hot(var_index_mask_no.long(), num_classes=torch.unique(var_index_mask_no).size(0))
-                out_vars = out.unsqueeze(1) * var_hot.transpose(1, 2).unsqueeze(-1)
+                # out_vars = out.unsqueeze(1) * var_hot.transpose(1, 2).unsqueeze(-1)
+                out_vars = var_reg.unsqueeze(1) * var_hot.transpose(1, 2).unsqueeze(-1)
                 out_var_mean = out_vars.mean(dim=-2, keepdim=True) #* mean_rescale # average on the tokens
                 # print(torch.sum(out_var_mean * var_hot.transpose(1, 2).unsqueeze(-1)))
                 out_var_difference = out_vars - (out_var_mean * var_hot.transpose(1, 2).unsqueeze(-1))
@@ -213,7 +219,7 @@ class LitTransformerStack(L.LightningModule):
         var_index_mask_no = torch.roll(var_index_mask_no, -1, 1) # shift one back coz nps and _ have been moved to the back
         tokenization.BERT_MODEL.to('cpu')
         
-        out, classified_class = self.model(target_embs[:, :-1, :], in_embs)
+        out, classified_class, var_reg = self.model(target_embs[:, :-1, :], in_embs)
         target = target_embs[:, 1:, :]
 
         #no mse for the pads, variables, lambda or anything else. jus tthe actual embeddings
@@ -228,22 +234,23 @@ class LitTransformerStack(L.LightningModule):
         
         #mse on lambdas
         if out[lambda_index_mask].reshape(-1, out.size(-1)).shape[0] != 0:
-            lambda_loss = criterion(out[lambda_index_mask].reshape(-1, out.size(-1)), target[lambda_index_mask].reshape(-1, out.size(-1))) # has to be consisten across batches
+            # lambda_loss = criterion(out[lambda_index_mask].reshape(-1, out.size(-1)), target[lambda_index_mask].reshape(-1, out.size(-1))) # has to be consisten across batches
 
             ##inconsisten version:
             # lambda_loss = criterion(out[lambda_index_mask].reshape(-1, out.size(-1))[0:1, :].repeat(repeat_times, 1), out[lambda_index_mask].reshape(-1, out.size(-1))[1:, :])
-            loss += lambda_loss.mean()
+            # loss += lambda_loss.mean()
 
-            self.log("train_loss_lambdas", lambda_loss, batch_size=out.size(0), sync_dist=True) 
-            # gt_cls_mask = var_index_mask_no.type(torch.bool) + 2*lambda_index_mask.type(torch.bool)
-            # classifier_loss = class_criterion(classified_class.view(-1, 3), gt_cls_mask.view(-1))
-            # loss += classifier_loss
+            # self.log("train_loss_lambdas", lambda_loss, batch_size=out.size(0), sync_dist=True) 
+            gt_cls_mask = var_index_mask_no.type(torch.bool) + 2*lambda_index_mask.type(torch.bool)
+            classifier_loss = class_criterion(classified_class.view(-1, 3), gt_cls_mask.view(-1))
+            loss += classifier_loss
 
-            # self.log("train_loss_classifier", classifier_loss, batch_size=out.size(0), sync_dist=True)
+            self.log("train_loss_classifier", classifier_loss, batch_size=out.size(0), sync_dist=True)
 
             #loss on variables: compute the variance on the variables
             var_hot = nn.functional.one_hot(var_index_mask_no.long(), num_classes=torch.unique(var_index_mask_no).size(0))
-            out_vars = out.unsqueeze(1) * var_hot.transpose(1, 2).unsqueeze(-1)
+            # out_vars = out.unsqueeze(1) * var_hot.transpose(1, 2).unsqueeze(-1) -- FOR PREVIOUS
+            out_vars = var_reg.unsqueeze(1) * var_hot.transpose(1, 2).unsqueeze(-1)
             mean_rescale = (out_vars.shape[-2]/torch.count_nonzero(out_vars.sum(dim=-1, keepdim=True), dim=-2)).unsqueeze(-1).detach()
             out_var_mean = out_vars.mean(dim=-2, keepdim=True) #* mean_rescale # average on the tokens
             # print(torch.sum(out_var_mean * var_hot.transpose(1, 2).unsqueeze(-1)))
@@ -259,8 +266,10 @@ class LitTransformerStack(L.LightningModule):
             self.log("train_loss_vars", var_loss.mean(), batch_size=out.size(0), sync_dist=True)
             
             #orthogonality loss:
-            
-            ortho_loss = out_var_mean.squeeze(-2) @ out_var_mean.squeeze(-2).transpose(1, 2)
+            out_var_mean_normed = torch.sum((out_var_mean ** 2), dim=-1, keepdim=True) + 1e-6
+            out_var_mean_normed = out_var_mean / out_var_mean_normed
+            ortho_loss = out_var_mean.squeeze(-2) @ out_var_mean.squeeze(-2).transpose(-1, -2)
+
             #mask diagonals out
             ortho_loss = ortho_loss * (1 - torch.eye(ortho_loss.size(-1)).to(ortho_loss.device))
             loss += 1e-2*ortho_loss.mean()
@@ -291,7 +300,7 @@ def main(hparams=None, load_chckpnt=False):
 if __name__ == "__main__":
     #make arg parser
     #set visible gpus:
-    os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "1"
     os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
     L.seed_everything(0)
 
