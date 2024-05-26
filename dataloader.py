@@ -26,7 +26,7 @@ class LambdaTermsDataset(Dataset):
     def __getitem__(self, index):
         sentence = self.input_sentences.iloc[index, 0]
         path = self.input_sentences.iloc[index, 1]
-        path = DATA_PATH + path[len("lambdaBERT/data/"):]
+        path = DATA_PATH + path[len("lmbb/lambdaBERT/data/"):]
         with open(path, 'r') as f:
             lambda_terms = f.readlines()[0].strip()
 

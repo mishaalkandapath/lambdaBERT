@@ -32,6 +32,8 @@ def setup(rank, world_size):
 def cleanup():
     dist.destroy_process_group()
 
+GLOBAL_BIG_FILE = open("big_vectors.txt", "a")
+
 
 ### Model Definition ###
 class TransformerDecoderStack(nn.Module):
@@ -66,7 +68,7 @@ class TransformerDecoderStack(nn.Module):
             self.final_forward = nn.Linear(d_model, 768)
             self.classifier_forward = nn.Linear(d_model, 3)
             self.reg_forward1 = nn.Linear(d_model, d_model)
-            self.reg_forward2 = nn.Linear(d_model, 2)
+            self.reg_forward2 = nn.Linear(d_model, 10)
             self.reg_act = nn.ReLU()
 
             self.decoders = nn.ModuleList([nn.TransformerDecoderLayer(d_model, num_heads, dropout=dropout, batch_first=True).cuda()
@@ -98,9 +100,9 @@ class TransformerDecoderStack(nn.Module):
             if (i+1) % self.layers_in_a_gpu == 0 and i != self.num_layers - 1 and self.mode:
                 outputs = outputs.to(getattr(self, f"device_{i//self.layers_in_a_gpu}"))
                 emb = emb.to(getattr(self, f"device_{i//self.layers_in_a_gpu}"))
-            if final_class_emb_help is None and i == self.num_layers - 4:
+            if final_class_emb_help is None and i == self.num_layers - 2:
                 final_class_emb_help = outputs
-            elif i < self.num_layers - 4:
+            elif self.num_layers-1>i > self.num_layers - 2:
                 final_class_emb_help += outputs
 
         outputs = self.final_forward(outputs)
@@ -170,6 +172,8 @@ class LitTransformerStack(L.LightningModule):
                 var_hot = nn.functional.one_hot(var_index_mask_no.long(), num_classes=torch.unique(var_index_mask_no).size(0))
                 # out_vars = out.unsqueeze(1) * var_hot.transpose(1, 2).unsqueeze(-1)
                 out_vars = var_reg.unsqueeze(1) * var_hot.transpose(1, 2).unsqueeze(-1)
+                
+                # ---- VARIANCE LOSS ----           
                 out_var_mean = out_vars.mean(dim=-2, keepdim=True) #* mean_rescale # average on the tokens
                 # print(torch.sum(out_var_mean * var_hot.transpose(1, 2).unsqueeze(-1)))
                 out_var_difference = out_vars - (out_var_mean * var_hot.transpose(1, 2).unsqueeze(-1))
@@ -181,15 +185,41 @@ class LitTransformerStack(L.LightningModule):
                 # print(var_loss.sum())
                 loss += var_loss
 
+                self.log("val_loss_variance", var_loss, batch_size=out.size(0), sync_dist=True)
+
+                # --- COS SIM LOSS ----
+                out_vars_normed = (out_vars.pow(2).sum(dim=-1) + 1e-6).sqrt()
+                out_vars_normed = out_vars / out_vars_normed.unsqueeze(-1)
+                out_vars_sim = out_vars_normed @ out_vars_normed.transpose(-1, -2) # similarity within classes, everything else is 0
+                out_vars_sim_mask = var_hot.transpose(1, 2).unsqueeze(-1).to(dtype=torch.float32) @ var_hot.transpose(1, 2).unsqueeze(-2).to(dtype=torch.float32)
+                var_loss = 1 - (out_vars_sim + (out_vars_sim_mask == 0))
+                loss += var_loss.mean()
+
                 self.log("val_loss_vars", var_loss.mean(), batch_size=out.size(0), sync_dist=True)
 
-                #orthogonality loss:
-                ortho_loss = out_var_mean.squeeze(-2) @ out_var_mean.squeeze(-2).transpose(1, 2)
+                # ---- Othogonality loss for Variance Loss
+                # ortho_loss = out_var_mean.squeeze(-2) @ out_var_mean.squeeze(-2).transpose(1, 2)
+                # #mask diagonals out
+                # ortho_loss = ortho_loss * (1 - torch.eye(ortho_loss.size(-1)).to(ortho_loss.device))
+                # loss += ortho_loss.mean()
+
+                # --- Ortho loss for sim loss
+                out_var_mean_normed = out_vars_normed.mean(dim=-2, keepdim=True)
+
+                # Common component for ortho loss
+                ortho_loss = out_var_mean_normed.squeeze(-2) @ out_var_mean_normed.squeeze(-2).transpose(-1, -2)
+
                 #mask diagonals out
                 ortho_loss = ortho_loss * (1 - torch.eye(ortho_loss.size(-1)).to(ortho_loss.device))
-                loss += ortho_loss.mean()
+                loss += torch.abs(ortho_loss.mean())
 
                 self.log("val_loss_ortho", ortho_loss.mean(), batch_size=out.size(0), sync_dist=True)
+
+                #VAR NORM LOSS
+                # norm_loss = 1 - (out_vars.pow(2).sum(dim=-1) + (var_hot.transpose(1, 2).unsqueeze(-1) == 0))
+                # loss += norm_loss.mean()
+
+                # self.log("val_norm_loss", norm_loss.mean(), batch_size=out.size(0), sync_dist=True)
 
         self.log("val_loss", loss.mean(), batch_size=out.size(0), sync_dist=True, prog_bar=True) 
 
@@ -226,11 +256,11 @@ class LitTransformerStack(L.LightningModule):
         #offset the masks by one 
         lambda_index_mask, var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask = (lambda_index_mask[:, 1:], var_index_mask[:, 1:], var_index_mask_underscore[:, 1:], var_index_mask_no[:, 1:], pad_mask[:, 1:])
 
-        loss = 1e-2 * criterion(out[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | pad_mask)],
+        loss = criterion(out[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | pad_mask)],
                         target[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | pad_mask)])
         
 
-        self.log("train_loss_tokens", loss/1e-2, batch_size=out.size(0), sync_dist=True) 
+        self.log("train_loss_tokens", loss, batch_size=out.size(0), sync_dist=True) 
         
         #mse on lambdas
         if out[lambda_index_mask].reshape(-1, out.size(-1)).shape[0] != 0:
@@ -241,7 +271,7 @@ class LitTransformerStack(L.LightningModule):
             # loss += lambda_loss.mean()
 
             # self.log("train_loss_lambdas", lambda_loss, batch_size=out.size(0), sync_dist=True) 
-            gt_cls_mask = var_index_mask_no.type(torch.bool) + 2*lambda_index_mask.type(torch.bool)
+            gt_cls_mask = var_index_mask_no.type(torch.bool) + 2*lambda_index_mask.type(torch.bool) #because lambda's class is 2
             classifier_loss = class_criterion(classified_class.view(-1, 3), gt_cls_mask.view(-1))
             loss += classifier_loss
 
@@ -250,8 +280,11 @@ class LitTransformerStack(L.LightningModule):
             #loss on variables: compute the variance on the variables
             var_hot = nn.functional.one_hot(var_index_mask_no.long(), num_classes=torch.unique(var_index_mask_no).size(0))
             # out_vars = out.unsqueeze(1) * var_hot.transpose(1, 2).unsqueeze(-1) -- FOR PREVIOUS
+            var_hot = var_hot.to(dtype=torch.bool)
             out_vars = var_reg.unsqueeze(1) * var_hot.transpose(1, 2).unsqueeze(-1)
-            mean_rescale = (out_vars.shape[-2]/torch.count_nonzero(out_vars.sum(dim=-1, keepdim=True), dim=-2)).unsqueeze(-1).detach()
+           
+            # ---- VARIANCE LOSS ----           
+            # mean_rescale = (out_vars.shape[-2]/torch.count_nonzero(out_vars.sum(dim=-1, keepdim=True), dim=-2)).unsqueeze(-1).detach()
             out_var_mean = out_vars.mean(dim=-2, keepdim=True) #* mean_rescale # average on the tokens
             # print(torch.sum(out_var_mean * var_hot.transpose(1, 2).unsqueeze(-1)))
             out_var_difference = out_vars - (out_var_mean * var_hot.transpose(1, 2).unsqueeze(-1))
@@ -263,18 +296,47 @@ class LitTransformerStack(L.LightningModule):
             # print(var_loss.sum())
             loss += var_loss
 
+            self.log("train_loss_variance", var_loss, batch_size=out.size(0), sync_dist=True)
+
+            # --- COS SIM LOSS ----
+            out_vars_normed = (out_vars.pow(2).sum(dim=-1) + 1e-6).sqrt()
+            out_vars_normed = out_vars / out_vars_normed.unsqueeze(-1)
+            out_vars_sim = out_vars_normed @ out_vars_normed.transpose(-1, -2) # similarity within classes, everything else is 0
+            out_vars_sim_mask = var_hot.transpose(1, 2).unsqueeze(-1).to(dtype=torch.float32) @ var_hot.transpose(1, 2).unsqueeze(-2).to(dtype=torch.float32)
+            var_loss = 1 - (out_vars_sim + (out_vars_sim_mask == 0))
+            loss += var_loss.mean()
+
             self.log("train_loss_vars", var_loss.mean(), batch_size=out.size(0), sync_dist=True)
             
-            #orthogonality loss:
-            out_var_mean_normed = torch.sum((out_var_mean ** 2), dim=-1, keepdim=True) + 1e-6
-            out_var_mean_normed = out_var_mean / out_var_mean_normed
-            ortho_loss = out_var_mean.squeeze(-2) @ out_var_mean.squeeze(-2).transpose(-1, -2)
+            # ---- Othogonality loss for Variance Loss
+            # out_var_mean_normed = torch.sum((out_var_mean ** 2), dim=-1, keepdim=True) + 1e-6
+            # out_var_mean_normed = out_var_mean / out_var_mean_normed
+
+            # --- Ortho loss for sim loss
+            out_var_mean_normed = out_vars_normed.mean(dim=-2, keepdim=True)
+
+            # Common component for ortho loss
+            ortho_loss = out_var_mean_normed.squeeze(-2) @ out_var_mean_normed.squeeze(-2).transpose(-1, -2)
 
             #mask diagonals out
             ortho_loss = ortho_loss * (1 - torch.eye(ortho_loss.size(-1)).to(ortho_loss.device))
-            loss += 1e-2*ortho_loss.mean()
+            loss += torch.abs(ortho_loss.mean())
 
             self.log("train_loss_ortho", ortho_loss.mean(), batch_size=out.size(0), sync_dist=True)
+
+            #sample a few variable vectors from a random batch and write them to file
+            # if batch_idx % 100 == 0:
+            #     batch = torch.randint(0, 4)
+            #     #pick a random variable in this batch
+
+            #     vrs = out_vars[, ]
+
+            #VAR NORM LOSS
+            # norm_loss = 1 - (out_vars.pow(2).sum(dim=-1) + (var_hot.transpose(1, 2).unsqueeze(-1) == 0))
+            # loss += norm_loss.mean()
+
+            # self.log("train_norm_loss", norm_loss.mean(), batch_size=out.size(0), sync_dist=True)
+            self.log("train_var_norm", torch.mean((out_vars.pow(2).sum(dim=-1) + 1e-6).sqrt()))
 
         self.log("train_loss", loss, batch_size=out.size(0), sync_dist=True, prog_bar=True) 
 
@@ -300,7 +362,7 @@ def main(hparams=None, load_chckpnt=False):
 if __name__ == "__main__":
     #make arg parser
     #set visible gpus:
-    os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "2"
     os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
     L.seed_everything(0)
 
