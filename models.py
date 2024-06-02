@@ -71,8 +71,9 @@ class TransformerDecoderStack(nn.Module):
             self.reg_forward2 = nn.Linear(d_model, 10)
             self.reg_act = nn.ReLU()
 
-            self.decoders = nn.ModuleList([nn.TransformerDecoderLayer(d_model, num_heads, dropout=dropout, batch_first=True).cuda()
+            self.decoders = nn.ModuleList([nn.TransformerDecoderLayer(d_model, num_heads, dropout=dropout, batch_first=True)
                                             for _ in range(self.num_layers)])
+            # self.var_decoder = nn.TransformerDecoderLayer(d_model, num_heads, dropout=dropout, batch_first=True)
             
             self.layers_in_a_gpu = self.num_layers
 
@@ -92,6 +93,8 @@ class TransformerDecoderStack(nn.Module):
         tgt_mask = torch.nn.Transformer.generate_square_subsequent_mask(seq.size(1)).to(emb.device)
 
         final_class_emb_help = None
+        #run variable predictions
+        # var_outs = self.var_decoder(outputs, emb, tgt_mask=tgt_mask)
 
         for i in range(self.num_layers):
             outputs = self.decoders[i](outputs, emb, tgt_mask=tgt_mask)
@@ -106,9 +109,17 @@ class TransformerDecoderStack(nn.Module):
                 final_class_emb_help += outputs
 
         outputs = self.final_forward(outputs)
+
+        #Variable classification and prediction
         classified_class = self.classifier_forward(final_class_emb_help)
+        # classified_class = self.classifier_forward(var_outs)
 
         var_emb = self.reg_forward2(self.reg_act(self.reg_forward1(final_class_emb_help)))
+        # var_emb = self.reg_forward2(self.reg_act(self.reg_forward1(var_outs)))
+
+        #dummy
+        # var_emb = torch.zeros(outputs.shape[:-1] + (10, ))
+        # classified_class = torch.zeros(outputs.shape[:-1] + (3,))
         return outputs, classified_class, var_emb
     
 class LitTransformerStack(L.LightningModule):
@@ -166,7 +177,7 @@ class LitTransformerStack(L.LightningModule):
                 classifier_loss = class_criterion(classified_class.view(-1, 3), gt_cls_mask.view(-1))
                 loss += classifier_loss
 
-                self.log("train_loss_classifier", classifier_loss, batch_size=out.size(0), sync_dist=True)
+                self.log("val_loss_classifier", classifier_loss, batch_size=out.size(0), sync_dist=True)
 
                 #loss on variables: compute the variance on the variables
                 var_hot = nn.functional.one_hot(var_index_mask_no.long(), num_classes=torch.unique(var_index_mask_no).size(0))
@@ -273,7 +284,7 @@ class LitTransformerStack(L.LightningModule):
             # self.log("train_loss_lambdas", lambda_loss, batch_size=out.size(0), sync_dist=True) 
             gt_cls_mask = var_index_mask_no.type(torch.bool) + 2*lambda_index_mask.type(torch.bool) #because lambda's class is 2
             classifier_loss = class_criterion(classified_class.view(-1, 3), gt_cls_mask.view(-1))
-            loss += classifier_loss
+            # loss += classifier_loss
 
             self.log("train_loss_classifier", classifier_loss, batch_size=out.size(0), sync_dist=True)
 
@@ -349,7 +360,8 @@ class LitTransformerStack(L.LightningModule):
 def main(hparams=None, load_chckpnt=False):
     model = TransformerDecoderStack(4, 384, 8, 3072)
     if load_chckpnt: 
-        model = LitTransformerStack.load_from_checkpoint(SAVE_DIR+"logs/lightning_logs/version_0/checkpoints/epoch=4-step=485.ckpt",model=model)
+        # model = LitTransformerStack.load_from_checkpoint(SAVE_DIR+"logs/lightning_logs/version_0/checkpoints/epoch=4-step=485.ckpt",model=model)
+        model = LitTransformerStack.load_from_checkpoint("/w/150/lambda_squad/lambdaBERT/model.ckpt",model=model)
         print("sucesfully loaded in parameters")
     else: model = LitTransformerStack(model)
 
