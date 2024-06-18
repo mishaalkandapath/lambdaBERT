@@ -1,8 +1,8 @@
-from transformers import BertTokenizerFast, BertModel, BertConfig
+from transformers import BertTokenizerFast, BertModel
 import torch
-from nltk.tokenize.treebank import TreebankWordTokenizer
 import re
 from collections import defaultdict
+import random
 
 TOKENIZER = BertTokenizerFast.from_pretrained ("bert-base-uncased")
 
@@ -165,160 +165,160 @@ LAMBDA = [-3.3135e+00, -2.7586e+00, -3.6889e-01, -3.7267e+00,  3.3720e+00,
          3.4565e-01,  5.2624e-01,  7.6441e-01,  5.5507e-01,  8.3721e-01,
         -1.3733e+00,  5.3714e-01,  8.8101e-01]
 
-CLOSE_RRB = [-3.8871e-01, -1.0770e+00,  1.7466e+00, -4.5724e+00,  6.6877e-01,
-         1.1962e+00,  2.2884e+00,  9.9552e-01,  8.4224e-02, -4.8461e+00,
-        -1.5592e+00,  1.2685e+00,  1.5112e+00,  7.8350e-01,  7.3723e-01,
-         2.4154e+00,  8.5122e-01,  3.7956e+00,  2.9970e+00,  2.9566e-01,
-         5.9714e-01,  4.1934e-01,  7.3949e-01,  4.3070e+00,  1.9104e+00,
-        -1.0911e+00,  1.7493e+00,  3.3533e+00, -5.4541e+00,  3.0864e+00,
-         4.8866e+00, -1.1466e+00, -7.9249e-02,  1.4866e+00, -2.3001e+00,
-        -1.2311e+00,  2.3655e+00, -3.8113e-01, -2.4422e-01,  2.4029e+00,
-         1.5057e+00, -5.9251e+00,  2.1731e+00,  3.7609e-01, -4.8415e+00,
-         2.1438e+00, -9.4770e-01,  1.1750e+00, -4.6971e-03, -1.5786e+00,
-        -5.3118e+00,  1.3233e+00,  5.2607e+00,  1.4388e+00,  1.8421e+00,
-        -4.0422e+00, -1.0194e+00, -4.6734e+00, -5.6986e+00,  3.9530e-01,
-         2.5090e+00, -5.9012e-01,  1.2851e+00,  9.0376e-01, -1.2388e+00,
-         2.2038e+00, -2.6924e+00, -2.8125e+00, -3.7758e+00,  2.0744e+00,
-         1.9241e+00,  2.3502e-01,  1.8055e+00, -1.4002e+00,  3.1339e+00,
-        -2.9449e-01,  5.1032e+00,  1.3504e+00,  2.8017e+00,  5.6200e-01,
-         8.3429e-01,  3.4391e-01, -3.2140e-01,  1.9280e+00,  2.0931e+00,
-        -1.2568e-01,  1.6966e+00,  7.6049e-01,  1.0474e-01,  9.9366e-01,
-        -5.2580e+00, -2.4061e+00, -1.2966e+00,  1.4177e-01,  2.6876e+00,
-        -4.6676e+00, -8.3298e-01, -1.6426e+00,  7.6277e-01, -4.0907e+00,
-         1.0262e+00, -6.3796e+00, -1.8598e+00,  8.6796e-01, -1.3227e+00,
-        -1.5870e+00,  6.0524e-01, -3.8513e+00, -4.6313e-01, -1.6349e+00,
-        -2.0779e+00,  5.7608e-01, -3.2626e+00, -2.7255e+00,  1.1886e+00,
-         2.8222e+00, -1.9173e+00, -3.1136e+00, -2.5554e+00,  5.5301e+00,
-         3.5101e+00,  2.2306e-01,  3.0306e+00,  1.6149e+00, -1.2289e+00,
-        -3.0680e+00, -4.6375e-01, -2.8537e+00,  2.5661e-01,  4.2211e-01,
-        -3.8533e-01, -2.0262e+00, -6.7558e-01, -2.5968e+00,  5.3114e-01,
-        -1.2985e+00,  1.3947e+00,  1.1863e+00,  2.1071e+00, -8.8210e-01,
-        -2.3008e-01,  5.2584e-01,  1.2659e+00, -4.4016e+00,  2.0441e+00,
-        -1.7282e+00,  2.8452e+00,  1.0065e+00, -1.7638e+00, -7.6038e-01,
-        -3.6684e+00,  9.4802e-01, -1.4886e+00,  9.2280e-01, -1.5627e+00,
-         4.9255e-01,  8.7097e-01,  1.4974e+00, -1.1198e+00,  1.0886e+00,
-         3.4937e+00,  3.1617e-01, -2.2637e-01,  1.7712e+00,  4.0145e-01,
-        -1.1797e+00, -2.5325e+00,  3.0014e+00, -4.4108e-01,  5.7097e-01,
-        -1.6909e+00, -7.3382e+00, -1.1013e+00, -1.7153e+00,  2.3629e+00,
-         1.8674e+00, -9.3920e-01,  2.2010e-01, -7.1416e-01, -3.4133e+00,
-        -1.8510e+00,  3.0001e+00, -2.2407e+00, -5.6058e-01, -1.3469e-01,
-         2.0032e+00,  5.4976e+00, -1.5570e+00,  4.5066e+00,  1.6744e+00,
-        -2.3566e+00, -6.3455e-01, -2.9651e+00,  5.9745e-01,  5.7526e-01,
-         2.8416e+00,  1.1390e+00, -1.6687e+00, -1.3489e+00, -3.2533e+00,
-         1.8261e+00,  4.6400e-01,  1.0413e-01, -1.7599e+00, -7.5466e-01,
-         6.0605e+00, -3.0776e+00, -9.3484e-01,  2.6272e+00, -2.6311e-01,
-         9.9820e-01,  3.4289e+00, -2.0193e+00, -3.1104e+00, -1.8481e+00,
-        -1.1297e+00,  2.2868e+00,  2.8288e+00,  1.6782e+00, -4.2987e+00,
-         7.2266e-02, -3.3547e+00,  1.8630e+00,  2.7457e+00, -9.2396e-01,
-         3.8581e+00, -1.9604e+00,  2.3175e+00,  1.1265e+00, -3.5554e+00,
-        -3.3434e+00, -2.3808e+00,  2.7159e+00, -5.6063e-01, -7.9912e-01,
-        -6.6254e-01, -6.3190e-01,  3.7147e-01,  1.6938e+00,  4.7177e-01,
-         9.7342e-02,  1.6174e-01,  9.3225e-01,  1.8617e+00, -1.8385e+00,
-         7.4199e-01,  4.6742e-02, -1.4229e+00, -4.3235e+00,  2.2204e+00,
-        -6.5073e-01,  5.2437e-01, -1.0997e+00,  1.1609e+00,  5.2754e-01,
-        -5.0071e-01,  9.3839e-01, -3.0528e+00,  2.1976e+00, -3.0473e-01,
-         1.7594e+00, -1.0311e+00,  3.3492e+00, -2.4740e+00, -1.4818e+00,
-         3.3074e+00, -6.6204e-01,  9.0563e-01, -3.5000e+00, -1.9298e+00,
-        -2.2795e+00,  1.4401e+00, -2.3054e+00, -2.7584e+00, -1.7381e+00,
-         9.7684e-01,  1.6665e+00, -2.0608e+00, -1.9624e+00,  3.0067e+00,
-         1.4029e+00, -1.8884e+00, -1.6307e+00,  1.1064e+00,  2.3155e+00,
-        -1.6421e+00, -2.0672e+00, -2.4872e+00,  2.0302e-01, -8.7325e-01,
-        -3.7037e+00,  2.0353e+00,  3.1377e+00, -2.5880e+00,  1.0998e+00,
-        -1.1462e+00, -1.4036e-01,  8.8854e-01,  1.7797e-01, -1.7005e+00,
-         7.7511e-01, -1.0551e+00, -5.9867e-01, -6.3854e+00,  3.5027e+00,
-         1.0898e+00, -7.6010e-01, -2.6171e-01, -2.3535e+01,  5.6245e-01,
-        -4.3783e-01,  2.4138e+00,  1.6334e+00, -7.4263e-01, -3.5540e-01,
-         1.9400e+00, -3.1913e+00, -1.5147e+00, -2.4222e+00, -2.2595e+00,
-         8.7741e-01, -1.0051e-01,  2.1117e+00, -8.7325e-01, -1.8675e+00,
-        -2.7015e+00, -2.4627e+00,  1.4854e+00, -4.7219e+00,  4.7472e-01,
-         5.4321e+00, -9.9523e-01, -2.9097e+00, -3.7816e-01,  3.4424e+00,
-        -1.9157e+00, -4.7347e+00, -2.3460e-01, -1.0297e+00, -1.8493e+00,
-        -2.2891e-01,  3.2884e+00,  1.9899e+00,  3.7367e+00,  3.0150e-01,
-        -1.7715e+00,  1.4570e+00, -1.1296e+00, -8.5900e-02,  2.4086e+00,
-        -1.0160e+00,  1.2524e+00,  3.5164e-02,  4.4944e-01,  4.8945e+00,
-        -5.5573e-01,  4.9084e-01,  1.0879e+00, -2.7622e+00, -4.2687e-01,
-         2.2334e+00, -4.2524e-01, -2.3268e+00,  3.0917e+00,  3.1177e+00,
-         2.6844e+00,  7.7497e-01,  2.8618e+00, -3.2960e+00, -3.5113e+00,
-        -2.5952e+00,  3.9066e+00, -1.2459e+00, -2.2768e+00, -8.4910e-01,
-         9.5896e-01, -2.5699e-01, -1.2238e+00,  1.6274e+00,  4.3834e+00,
-         4.6420e-01, -9.8892e+00,  7.1837e-01, -1.5758e+00, -1.6775e+00,
-        -2.0615e+00,  1.9353e+00, -1.1529e+00, -1.3527e+00, -3.3651e+00,
-        -2.6721e+00,  2.6235e+00, -2.4603e+00,  2.6795e+00, -2.5909e+00,
-         1.1588e+00, -4.8654e+00,  1.8811e+00,  2.0926e+00,  2.9724e+00,
-         1.3334e+00,  6.5313e-01,  3.9249e-01,  2.4178e+00,  2.7918e+00,
-        -3.0740e+00,  3.0942e+00, -1.8001e+00, -3.7631e+00,  3.5815e+00,
-         1.0252e+00,  2.1137e+00,  1.0785e+00, -3.2189e+00, -3.0209e+00,
-         3.1010e-01, -2.1942e-01, -3.3242e+00,  2.1015e+00, -4.5651e+00,
-         2.8535e+00,  9.6875e-01,  7.3484e-01, -2.1791e+00,  1.5512e+00,
-        -2.7004e+00, -4.0472e+00, -1.1782e-01, -5.7519e+00,  7.5291e-01,
-        -3.3154e+00, -4.9961e+00, -1.4810e-01, -1.3161e+00,  1.1473e+00,
-        -2.6526e+00, -1.9123e+00,  1.9088e+00, -2.1725e-01, -4.8454e-01,
-        -6.8557e-01,  1.2239e+00, -3.5884e+00,  1.0850e+00, -1.0297e+00,
-         2.1554e+00,  3.0060e+00, -5.3860e-01,  2.1605e+00,  3.1017e+00,
-        -1.4866e+00,  1.0061e+00,  1.4145e+00,  2.0333e+00, -9.1809e-01,
-         3.4640e+00,  4.8595e+00,  3.5494e+00,  5.7825e-01,  4.8436e-01,
-         1.5023e+00, -1.3253e+00, -9.5811e-01, -1.3687e+00,  1.9724e+00,
-         1.4848e+00,  1.7060e+00, -1.3004e-01,  3.3004e+00, -1.7950e+00,
-         1.3179e+00,  3.2197e-01,  2.1385e+00, -6.6280e-01,  3.5429e-01,
-        -3.0542e+00,  1.6951e+00, -2.3242e+00, -7.4069e-02, -1.1541e+00,
-        -3.1942e+00, -8.6247e-01, -7.4121e-01, -1.5745e+00, -7.2775e-01,
-        -2.6228e+00, -7.7853e-01,  2.7429e+00,  4.1676e-01,  2.1893e+00,
-        -1.8410e+00,  1.1272e+00,  1.5664e+00,  2.3424e+00, -4.3379e-01,
-        -2.5685e+00,  4.0965e+00,  3.5176e+00,  4.5378e+00, -2.7182e+00,
-         2.7789e+00,  2.1302e+00,  9.0073e-01,  1.1235e+00,  1.9223e-01,
-         2.4192e+00,  4.2662e-01, -1.5112e+00, -1.5706e+00, -8.5127e+00,
-         3.0465e+00, -1.6591e+00,  2.4796e+00,  1.3826e+00, -4.9084e-01,
-         1.6014e+00, -1.8316e+00, -1.6975e+00,  4.2008e+00,  7.6035e-01,
-        -1.0840e+00, -4.1209e+00, -5.9665e+00,  2.3942e+00,  3.3098e+00,
-         2.7668e+00, -2.8110e+00, -1.7798e+00, -5.3896e-01, -2.4558e+00,
-         9.6017e-01, -7.4618e-01,  2.3411e+00, -6.9397e-02,  4.1694e-01,
-         2.0338e+00, -8.6242e-01, -2.2300e+00, -1.4946e+00,  4.2836e-01,
-        -1.5461e+00,  2.4133e-01,  3.8974e+00, -4.7015e+00,  1.4557e+00,
-         1.2581e+00, -8.6049e-01, -1.0742e+00,  3.5506e+00, -4.6725e+00,
-        -2.8541e+00,  1.4050e+00,  3.3865e-01, -2.4738e+00,  1.7102e-01,
-         1.7877e+00,  5.7880e+00,  3.9298e+00,  2.4865e-01, -3.9595e+00,
-        -1.7822e+00, -2.6105e-01, -1.6239e+00, -2.1919e+00, -5.7019e-01,
-         1.3023e+00, -1.5678e+00,  6.3665e-02, -1.3127e+00,  3.0665e+00,
-        -4.7821e-01,  1.6206e+00, -3.4235e+00,  7.6477e-01, -1.6106e+00,
-         8.9858e-02,  2.1820e+00, -9.7286e-01, -1.1494e+00,  2.8868e+00,
-         3.6176e+00,  5.8803e+00,  2.1407e+00, -2.6190e-02, -1.0697e+00,
-         1.9616e+00, -1.2543e+00, -9.1398e-01, -3.6478e+00,  3.5081e+00,
-        -2.4880e+00,  1.0005e+00,  1.9878e+00, -1.8576e+00,  3.4435e-01,
-         2.7178e+00, -8.7409e-02, -1.4398e+00,  1.6751e+00,  7.0793e-01,
-         3.0874e+00, -3.5926e+00, -1.8402e+00,  1.1422e+00, -2.4759e+00,
-         4.6494e-01,  2.6972e-01, -6.9582e-01,  8.2264e-01,  3.4265e+00,
-        -1.3597e+00,  9.1697e-01,  1.8612e-01,  3.9370e-02,  2.0854e+00,
-         4.4083e-01,  1.3139e+00,  2.2059e+00,  1.1746e+00,  4.7168e-03,
-         1.0818e+00,  1.4955e+00,  2.0064e+00, -1.5742e+00, -1.6155e+00,
-        -2.9960e+00,  1.1267e+00, -1.5488e-01, -1.2801e+00, -3.0096e+00,
-         1.4669e+00,  1.1597e+00,  1.9346e+00, -2.8665e+00, -2.1713e+00,
-        -2.1639e+00, -2.3321e+00, -8.0494e-01,  1.3725e+00,  7.2537e-01,
-        -3.6598e-01,  2.4668e+00, -2.1673e+00, -2.0346e+00,  2.1731e+00,
-        -1.5660e+00,  7.8379e-01,  2.1684e-01, -4.4236e+00,  3.7109e+00,
-        -1.2570e+00,  3.8754e-01, -2.5661e+00,  7.4501e-01, -3.0142e+00,
-         1.1772e+00, -2.7744e+00,  3.1761e+00, -2.3362e+00,  1.8967e-01,
-        -2.4250e+00,  5.8071e+00, -8.8451e-01,  3.0103e-02, -1.5654e+00,
-        -1.2202e+00, -6.2480e-01,  3.2635e+00, -2.4032e+00,  3.0838e+00,
-        -1.1952e+00, -1.2522e+00,  2.0280e+00, -4.1698e-01,  5.0147e-01,
-        -7.9968e-01,  1.1796e+00,  1.8804e+00,  6.5746e-01,  1.6311e+00,
-        -4.0466e+00,  1.7896e+00,  1.5850e+00,  5.8173e-01,  8.4453e-01,
-        -2.2747e+00,  7.8170e-01,  2.3464e+00,  1.8832e+00, -2.6242e+00,
-         3.0215e-01,  1.3288e+00,  1.0962e+00, -3.7336e+00,  6.0433e-01,
-         2.0153e+00, -7.4900e-01, -2.9327e+00, -1.5840e+00, -1.3748e+00,
-         1.0012e+00, -2.8342e+00,  1.7436e+00, -2.9041e+00,  5.3452e-01,
-         5.2469e-01, -1.0944e-01, -5.4724e-01, -1.4303e+00,  2.8695e+00,
-        -1.1795e+00,  2.5462e+00, -1.1005e+00,  1.3667e+00, -1.1353e+00,
-         3.7985e+00, -1.6755e+00, -3.0667e+00,  3.4209e+00, -7.0808e-01,
-        -6.8180e-01, -2.3601e+00,  8.0135e-01, -3.0479e+00,  1.8320e+00,
-        -1.9972e+00, -1.6403e+00, -3.8481e+00,  1.4312e+00, -8.9637e-01,
-        -1.1335e+00,  2.8988e+00, -1.5258e+00, -4.0159e+00, -1.5023e+00,
-         2.2422e+00, -3.1943e+00,  3.7195e+00,  1.6548e-01,  3.0832e+00,
-         3.0001e+00, -1.1750e+00,  2.0502e+00, -8.5500e-01, -1.7482e+00,
-        -2.5043e-01,  9.4602e-01, -2.5416e+00,  2.1011e+00,  2.5353e+00,
-        -1.9863e+00, -2.6522e+00, -5.8723e-01, -1.5563e+00,  1.8804e+00,
-        -4.1125e-01, -3.7955e+00,  2.1017e+00,  2.2169e-01,  7.2748e-01,
-        -1.4409e+00, -3.7708e-01, -3.2326e+00,  3.2160e-01,  1.9904e-02,
-        -1.5377e-02,  3.9238e+00,  2.3986e+00]
+# CLOSE_RRB = [-3.8871e-01, -1.0770e+00,  1.7466e+00, -4.5724e+00,  6.6877e-01,
+#          1.1962e+00,  2.2884e+00,  9.9552e-01,  8.4224e-02, -4.8461e+00,
+#         -1.5592e+00,  1.2685e+00,  1.5112e+00,  7.8350e-01,  7.3723e-01,
+#          2.4154e+00,  8.5122e-01,  3.7956e+00,  2.9970e+00,  2.9566e-01,
+#          5.9714e-01,  4.1934e-01,  7.3949e-01,  4.3070e+00,  1.9104e+00,
+#         -1.0911e+00,  1.7493e+00,  3.3533e+00, -5.4541e+00,  3.0864e+00,
+#          4.8866e+00, -1.1466e+00, -7.9249e-02,  1.4866e+00, -2.3001e+00,
+#         -1.2311e+00,  2.3655e+00, -3.8113e-01, -2.4422e-01,  2.4029e+00,
+#          1.5057e+00, -5.9251e+00,  2.1731e+00,  3.7609e-01, -4.8415e+00,
+#          2.1438e+00, -9.4770e-01,  1.1750e+00, -4.6971e-03, -1.5786e+00,
+#         -5.3118e+00,  1.3233e+00,  5.2607e+00,  1.4388e+00,  1.8421e+00,
+#         -4.0422e+00, -1.0194e+00, -4.6734e+00, -5.6986e+00,  3.9530e-01,
+#          2.5090e+00, -5.9012e-01,  1.2851e+00,  9.0376e-01, -1.2388e+00,
+#          2.2038e+00, -2.6924e+00, -2.8125e+00, -3.7758e+00,  2.0744e+00,
+#          1.9241e+00,  2.3502e-01,  1.8055e+00, -1.4002e+00,  3.1339e+00,
+#         -2.9449e-01,  5.1032e+00,  1.3504e+00,  2.8017e+00,  5.6200e-01,
+#          8.3429e-01,  3.4391e-01, -3.2140e-01,  1.9280e+00,  2.0931e+00,
+#         -1.2568e-01,  1.6966e+00,  7.6049e-01,  1.0474e-01,  9.9366e-01,
+#         -5.2580e+00, -2.4061e+00, -1.2966e+00,  1.4177e-01,  2.6876e+00,
+#         -4.6676e+00, -8.3298e-01, -1.6426e+00,  7.6277e-01, -4.0907e+00,
+#          1.0262e+00, -6.3796e+00, -1.8598e+00,  8.6796e-01, -1.3227e+00,
+#         -1.5870e+00,  6.0524e-01, -3.8513e+00, -4.6313e-01, -1.6349e+00,
+#         -2.0779e+00,  5.7608e-01, -3.2626e+00, -2.7255e+00,  1.1886e+00,
+#          2.8222e+00, -1.9173e+00, -3.1136e+00, -2.5554e+00,  5.5301e+00,
+#          3.5101e+00,  2.2306e-01,  3.0306e+00,  1.6149e+00, -1.2289e+00,
+#         -3.0680e+00, -4.6375e-01, -2.8537e+00,  2.5661e-01,  4.2211e-01,
+#         -3.8533e-01, -2.0262e+00, -6.7558e-01, -2.5968e+00,  5.3114e-01,
+#         -1.2985e+00,  1.3947e+00,  1.1863e+00,  2.1071e+00, -8.8210e-01,
+#         -2.3008e-01,  5.2584e-01,  1.2659e+00, -4.4016e+00,  2.0441e+00,
+#         -1.7282e+00,  2.8452e+00,  1.0065e+00, -1.7638e+00, -7.6038e-01,
+#         -3.6684e+00,  9.4802e-01, -1.4886e+00,  9.2280e-01, -1.5627e+00,
+#          4.9255e-01,  8.7097e-01,  1.4974e+00, -1.1198e+00,  1.0886e+00,
+#          3.4937e+00,  3.1617e-01, -2.2637e-01,  1.7712e+00,  4.0145e-01,
+#         -1.1797e+00, -2.5325e+00,  3.0014e+00, -4.4108e-01,  5.7097e-01,
+#         -1.6909e+00, -7.3382e+00, -1.1013e+00, -1.7153e+00,  2.3629e+00,
+#          1.8674e+00, -9.3920e-01,  2.2010e-01, -7.1416e-01, -3.4133e+00,
+#         -1.8510e+00,  3.0001e+00, -2.2407e+00, -5.6058e-01, -1.3469e-01,
+#          2.0032e+00,  5.4976e+00, -1.5570e+00,  4.5066e+00,  1.6744e+00,
+#         -2.3566e+00, -6.3455e-01, -2.9651e+00,  5.9745e-01,  5.7526e-01,
+#          2.8416e+00,  1.1390e+00, -1.6687e+00, -1.3489e+00, -3.2533e+00,
+#          1.8261e+00,  4.6400e-01,  1.0413e-01, -1.7599e+00, -7.5466e-01,
+#          6.0605e+00, -3.0776e+00, -9.3484e-01,  2.6272e+00, -2.6311e-01,
+#          9.9820e-01,  3.4289e+00, -2.0193e+00, -3.1104e+00, -1.8481e+00,
+#         -1.1297e+00,  2.2868e+00,  2.8288e+00,  1.6782e+00, -4.2987e+00,
+#          7.2266e-02, -3.3547e+00,  1.8630e+00,  2.7457e+00, -9.2396e-01,
+#          3.8581e+00, -1.9604e+00,  2.3175e+00,  1.1265e+00, -3.5554e+00,
+#         -3.3434e+00, -2.3808e+00,  2.7159e+00, -5.6063e-01, -7.9912e-01,
+#         -6.6254e-01, -6.3190e-01,  3.7147e-01,  1.6938e+00,  4.7177e-01,
+#          9.7342e-02,  1.6174e-01,  9.3225e-01,  1.8617e+00, -1.8385e+00,
+#          7.4199e-01,  4.6742e-02, -1.4229e+00, -4.3235e+00,  2.2204e+00,
+#         -6.5073e-01,  5.2437e-01, -1.0997e+00,  1.1609e+00,  5.2754e-01,
+#         -5.0071e-01,  9.3839e-01, -3.0528e+00,  2.1976e+00, -3.0473e-01,
+#          1.7594e+00, -1.0311e+00,  3.3492e+00, -2.4740e+00, -1.4818e+00,
+#          3.3074e+00, -6.6204e-01,  9.0563e-01, -3.5000e+00, -1.9298e+00,
+#         -2.2795e+00,  1.4401e+00, -2.3054e+00, -2.7584e+00, -1.7381e+00,
+#          9.7684e-01,  1.6665e+00, -2.0608e+00, -1.9624e+00,  3.0067e+00,
+#          1.4029e+00, -1.8884e+00, -1.6307e+00,  1.1064e+00,  2.3155e+00,
+#         -1.6421e+00, -2.0672e+00, -2.4872e+00,  2.0302e-01, -8.7325e-01,
+#         -3.7037e+00,  2.0353e+00,  3.1377e+00, -2.5880e+00,  1.0998e+00,
+#         -1.1462e+00, -1.4036e-01,  8.8854e-01,  1.7797e-01, -1.7005e+00,
+#          7.7511e-01, -1.0551e+00, -5.9867e-01, -6.3854e+00,  3.5027e+00,
+#          1.0898e+00, -7.6010e-01, -2.6171e-01, -2.3535e+01,  5.6245e-01,
+#         -4.3783e-01,  2.4138e+00,  1.6334e+00, -7.4263e-01, -3.5540e-01,
+#          1.9400e+00, -3.1913e+00, -1.5147e+00, -2.4222e+00, -2.2595e+00,
+#          8.7741e-01, -1.0051e-01,  2.1117e+00, -8.7325e-01, -1.8675e+00,
+#         -2.7015e+00, -2.4627e+00,  1.4854e+00, -4.7219e+00,  4.7472e-01,
+#          5.4321e+00, -9.9523e-01, -2.9097e+00, -3.7816e-01,  3.4424e+00,
+#         -1.9157e+00, -4.7347e+00, -2.3460e-01, -1.0297e+00, -1.8493e+00,
+#         -2.2891e-01,  3.2884e+00,  1.9899e+00,  3.7367e+00,  3.0150e-01,
+#         -1.7715e+00,  1.4570e+00, -1.1296e+00, -8.5900e-02,  2.4086e+00,
+#         -1.0160e+00,  1.2524e+00,  3.5164e-02,  4.4944e-01,  4.8945e+00,
+#         -5.5573e-01,  4.9084e-01,  1.0879e+00, -2.7622e+00, -4.2687e-01,
+#          2.2334e+00, -4.2524e-01, -2.3268e+00,  3.0917e+00,  3.1177e+00,
+#          2.6844e+00,  7.7497e-01,  2.8618e+00, -3.2960e+00, -3.5113e+00,
+#         -2.5952e+00,  3.9066e+00, -1.2459e+00, -2.2768e+00, -8.4910e-01,
+#          9.5896e-01, -2.5699e-01, -1.2238e+00,  1.6274e+00,  4.3834e+00,
+#          4.6420e-01, -9.8892e+00,  7.1837e-01, -1.5758e+00, -1.6775e+00,
+#         -2.0615e+00,  1.9353e+00, -1.1529e+00, -1.3527e+00, -3.3651e+00,
+#         -2.6721e+00,  2.6235e+00, -2.4603e+00,  2.6795e+00, -2.5909e+00,
+#          1.1588e+00, -4.8654e+00,  1.8811e+00,  2.0926e+00,  2.9724e+00,
+#          1.3334e+00,  6.5313e-01,  3.9249e-01,  2.4178e+00,  2.7918e+00,
+#         -3.0740e+00,  3.0942e+00, -1.8001e+00, -3.7631e+00,  3.5815e+00,
+#          1.0252e+00,  2.1137e+00,  1.0785e+00, -3.2189e+00, -3.0209e+00,
+#          3.1010e-01, -2.1942e-01, -3.3242e+00,  2.1015e+00, -4.5651e+00,
+#          2.8535e+00,  9.6875e-01,  7.3484e-01, -2.1791e+00,  1.5512e+00,
+#         -2.7004e+00, -4.0472e+00, -1.1782e-01, -5.7519e+00,  7.5291e-01,
+#         -3.3154e+00, -4.9961e+00, -1.4810e-01, -1.3161e+00,  1.1473e+00,
+#         -2.6526e+00, -1.9123e+00,  1.9088e+00, -2.1725e-01, -4.8454e-01,
+#         -6.8557e-01,  1.2239e+00, -3.5884e+00,  1.0850e+00, -1.0297e+00,
+#          2.1554e+00,  3.0060e+00, -5.3860e-01,  2.1605e+00,  3.1017e+00,
+#         -1.4866e+00,  1.0061e+00,  1.4145e+00,  2.0333e+00, -9.1809e-01,
+#          3.4640e+00,  4.8595e+00,  3.5494e+00,  5.7825e-01,  4.8436e-01,
+#          1.5023e+00, -1.3253e+00, -9.5811e-01, -1.3687e+00,  1.9724e+00,
+#          1.4848e+00,  1.7060e+00, -1.3004e-01,  3.3004e+00, -1.7950e+00,
+#          1.3179e+00,  3.2197e-01,  2.1385e+00, -6.6280e-01,  3.5429e-01,
+#         -3.0542e+00,  1.6951e+00, -2.3242e+00, -7.4069e-02, -1.1541e+00,
+#         -3.1942e+00, -8.6247e-01, -7.4121e-01, -1.5745e+00, -7.2775e-01,
+#         -2.6228e+00, -7.7853e-01,  2.7429e+00,  4.1676e-01,  2.1893e+00,
+#         -1.8410e+00,  1.1272e+00,  1.5664e+00,  2.3424e+00, -4.3379e-01,
+#         -2.5685e+00,  4.0965e+00,  3.5176e+00,  4.5378e+00, -2.7182e+00,
+#          2.7789e+00,  2.1302e+00,  9.0073e-01,  1.1235e+00,  1.9223e-01,
+#          2.4192e+00,  4.2662e-01, -1.5112e+00, -1.5706e+00, -8.5127e+00,
+#          3.0465e+00, -1.6591e+00,  2.4796e+00,  1.3826e+00, -4.9084e-01,
+#          1.6014e+00, -1.8316e+00, -1.6975e+00,  4.2008e+00,  7.6035e-01,
+#         -1.0840e+00, -4.1209e+00, -5.9665e+00,  2.3942e+00,  3.3098e+00,
+#          2.7668e+00, -2.8110e+00, -1.7798e+00, -5.3896e-01, -2.4558e+00,
+#          9.6017e-01, -7.4618e-01,  2.3411e+00, -6.9397e-02,  4.1694e-01,
+#          2.0338e+00, -8.6242e-01, -2.2300e+00, -1.4946e+00,  4.2836e-01,
+#         -1.5461e+00,  2.4133e-01,  3.8974e+00, -4.7015e+00,  1.4557e+00,
+#          1.2581e+00, -8.6049e-01, -1.0742e+00,  3.5506e+00, -4.6725e+00,
+#         -2.8541e+00,  1.4050e+00,  3.3865e-01, -2.4738e+00,  1.7102e-01,
+#          1.7877e+00,  5.7880e+00,  3.9298e+00,  2.4865e-01, -3.9595e+00,
+#         -1.7822e+00, -2.6105e-01, -1.6239e+00, -2.1919e+00, -5.7019e-01,
+#          1.3023e+00, -1.5678e+00,  6.3665e-02, -1.3127e+00,  3.0665e+00,
+#         -4.7821e-01,  1.6206e+00, -3.4235e+00,  7.6477e-01, -1.6106e+00,
+#          8.9858e-02,  2.1820e+00, -9.7286e-01, -1.1494e+00,  2.8868e+00,
+#          3.6176e+00,  5.8803e+00,  2.1407e+00, -2.6190e-02, -1.0697e+00,
+#          1.9616e+00, -1.2543e+00, -9.1398e-01, -3.6478e+00,  3.5081e+00,
+#         -2.4880e+00,  1.0005e+00,  1.9878e+00, -1.8576e+00,  3.4435e-01,
+#          2.7178e+00, -8.7409e-02, -1.4398e+00,  1.6751e+00,  7.0793e-01,
+#          3.0874e+00, -3.5926e+00, -1.8402e+00,  1.1422e+00, -2.4759e+00,
+#          4.6494e-01,  2.6972e-01, -6.9582e-01,  8.2264e-01,  3.4265e+00,
+#         -1.3597e+00,  9.1697e-01,  1.8612e-01,  3.9370e-02,  2.0854e+00,
+#          4.4083e-01,  1.3139e+00,  2.2059e+00,  1.1746e+00,  4.7168e-03,
+#          1.0818e+00,  1.4955e+00,  2.0064e+00, -1.5742e+00, -1.6155e+00,
+#         -2.9960e+00,  1.1267e+00, -1.5488e-01, -1.2801e+00, -3.0096e+00,
+#          1.4669e+00,  1.1597e+00,  1.9346e+00, -2.8665e+00, -2.1713e+00,
+#         -2.1639e+00, -2.3321e+00, -8.0494e-01,  1.3725e+00,  7.2537e-01,
+#         -3.6598e-01,  2.4668e+00, -2.1673e+00, -2.0346e+00,  2.1731e+00,
+#         -1.5660e+00,  7.8379e-01,  2.1684e-01, -4.4236e+00,  3.7109e+00,
+#         -1.2570e+00,  3.8754e-01, -2.5661e+00,  7.4501e-01, -3.0142e+00,
+#          1.1772e+00, -2.7744e+00,  3.1761e+00, -2.3362e+00,  1.8967e-01,
+#         -2.4250e+00,  5.8071e+00, -8.8451e-01,  3.0103e-02, -1.5654e+00,
+#         -1.2202e+00, -6.2480e-01,  3.2635e+00, -2.4032e+00,  3.0838e+00,
+#         -1.1952e+00, -1.2522e+00,  2.0280e+00, -4.1698e-01,  5.0147e-01,
+#         -7.9968e-01,  1.1796e+00,  1.8804e+00,  6.5746e-01,  1.6311e+00,
+#         -4.0466e+00,  1.7896e+00,  1.5850e+00,  5.8173e-01,  8.4453e-01,
+#         -2.2747e+00,  7.8170e-01,  2.3464e+00,  1.8832e+00, -2.6242e+00,
+#          3.0215e-01,  1.3288e+00,  1.0962e+00, -3.7336e+00,  6.0433e-01,
+#          2.0153e+00, -7.4900e-01, -2.9327e+00, -1.5840e+00, -1.3748e+00,
+#          1.0012e+00, -2.8342e+00,  1.7436e+00, -2.9041e+00,  5.3452e-01,
+#          5.2469e-01, -1.0944e-01, -5.4724e-01, -1.4303e+00,  2.8695e+00,
+#         -1.1795e+00,  2.5462e+00, -1.1005e+00,  1.3667e+00, -1.1353e+00,
+#          3.7985e+00, -1.6755e+00, -3.0667e+00,  3.4209e+00, -7.0808e-01,
+#         -6.8180e-01, -2.3601e+00,  8.0135e-01, -3.0479e+00,  1.8320e+00,
+#         -1.9972e+00, -1.6403e+00, -3.8481e+00,  1.4312e+00, -8.9637e-01,
+#         -1.1335e+00,  2.8988e+00, -1.5258e+00, -4.0159e+00, -1.5023e+00,
+#          2.2422e+00, -3.1943e+00,  3.7195e+00,  1.6548e-01,  3.0832e+00,
+#          3.0001e+00, -1.1750e+00,  2.0502e+00, -8.5500e-01, -1.7482e+00,
+#         -2.5043e-01,  9.4602e-01, -2.5416e+00,  2.1011e+00,  2.5353e+00,
+#         -1.9863e+00, -2.6522e+00, -5.8723e-01, -1.5563e+00,  1.8804e+00,
+#         -4.1125e-01, -3.7955e+00,  2.1017e+00,  2.2169e-01,  7.2748e-01,
+#         -1.4409e+00, -3.7708e-01, -3.2326e+00,  3.2160e-01,  1.9904e-02,
+#         -1.5377e-02,  3.9238e+00,  2.3986e+00]
 
 OPEN_RRB = [-1.6961e+00, -2.0422e+00, -1.0674e+00, -3.2021e+00, -6.9292e-01,
          2.4154e+00,  1.4091e+00, -5.1404e-01,  6.5184e-02, -2.0265e+00,
@@ -484,12 +484,20 @@ def create_out_embeddings(sentences, lamda=False):
     #search for the tokenized id of λ
     input_ids = tokenized["input_ids"]
     lambda_id = TOKENIZER.convert_tokens_to_ids("λ")
+    app_id = TOKENIZER.convert_tokens_to_ids("(")
 
     if lamda:
         #get all the indices where the lambda token is presen
         lambda_index_mask = (input_ids == lambda_id)
+        app_index_mask = (input_ids == app_id)
         var_index_mask = (input_ids == TOKENIZER.convert_tokens_to_ids("np"))
         var_index_mask = var_index_mask | (input_ids == TOKENIZER.convert_tokens_to_ids("##np"))
+        var_index_mask = (input_ids == TOKENIZER.convert_tokens_to_ids("s"))
+        var_index_mask = var_index_mask | (input_ids == TOKENIZER.convert_tokens_to_ids("##s"))
+        var_index_mask = (input_ids == TOKENIZER.convert_tokens_to_ids("pp"))
+        var_index_mask = var_index_mask | (input_ids == TOKENIZER.convert_tokens_to_ids("##pp"))
+        var_index_mask = (input_ids == TOKENIZER.convert_tokens_to_ids("n"))
+        var_index_mask = var_index_mask | (input_ids == TOKENIZER.convert_tokens_to_ids("##n"))
         #shift the 1s in var_index_mask to the right by 1
         var_index_mask_underscore = torch.roll(var_index_mask, shifts=1, dims=1)
         #roll again
@@ -506,7 +514,7 @@ def create_out_embeddings(sentences, lamda=False):
 
     # the mask of tokens belonging to the variable name, both next to the lambda and within an expression
     pad_mask = (input_ids == TOKENIZER.pad_token_id)
-    return (tokenized, lambda_index_mask, var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask) if lamda else (tokenized, pad_mask)
+    return (tokenized, lambda_index_mask, app_index_mask, var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask) if lamda else (tokenized, pad_mask)
 
 def get_bert_emb(tokenized_sents):
     #get the bert embeddings
@@ -521,7 +529,7 @@ def get_bert_emb(tokenized_sents):
     BERT_MODEL = BERT_MODEL
     return embs.detach() # no grads through bert ever
 
-def process_bert_lambda(tokenized_sents, lambda_index_mask, var_index_mask, lambda_norm=True, var_norm=True):
+def process_bert_lambda(tokenized_sents, lambda_index_mask, app_index_mask, var_index_mask, lambda_norm=True, var_norm=True):
     assert lambda_norm if var_norm else True, "norm_lambda cant be off and norm_var be on"
     # global BIG_VAR_EMBS
     #get the bert embeddings
@@ -531,7 +539,16 @@ def process_bert_lambda(tokenized_sents, lambda_index_mask, var_index_mask, lamb
     if var_norm: 
         embs[var_index_mask | var_index_mask_underscore | pad_mask] = torch.zeros_like(embs[0, 0, :]) # also make hte pad embeddings 0
         mask_sort = torch.argsort((var_index_mask | var_index_mask_underscore).to(torch.uint8), stable=True) #move the embeddiungs to the end
+        
+        # rearrange everything
         embs = torch.gather(embs, -1, mask_sort.unsqueeze(-1).expand(-1, -1, embs.size(-1)))  # all the var names and the underscores have been moveed to the end
+        lambda_index_mask = torch.gather(lambda_index_mask, -1, mask_sort)
+        var_index_mask_no = torch.gather(var_index_mask_no, -1, mask_sort)
+        app_index_mask = torch.gather(app_index_mask, -1, mask_sort)  
+        var_index_mask = torch.gather(var_index_mask, -1, mask_sort)
+        var_index_mask_underscore = torch.gather(var_index_mask_underscore, -1, mask_sort)
+        pad_mask = torch.gather(pad_mask, -1, mask_sort) 
+        pad_mask = pad_mask | var_index_mask | var_index_mask_underscore #extend the pad mask
         
     #     #now we have the var_numbers which we need to uniq-ify
     #     uniques, indices = torch.unique(var_index_mask_no.reshape(-1), return_inverse=True, sorted=True)
@@ -547,8 +564,8 @@ def process_bert_lambda(tokenized_sents, lambda_index_mask, var_index_mask, lamb
     #     embs = embs.index_put((var_index_mask_no != 0, ), BIG_VAR_EMBS[indices[indices != 0]], accumulate=True)
     if lambda_norm:
         embs[lambda_index_mask] = torch.tensor(LAMBDA, device=embs.device, dtype=embs.dtype)#torch.ones((embs.shape[-1], ), device=embs.device, dtype=embs.dtype)
-    #back to gpu
-    return embs
+
+    return embs, lambda_index_mask, app_index_mask, var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask
 
 def create_out_tensor(sentence, lambda_term):
     # group the offsets into a word dictionary
@@ -560,16 +577,31 @@ def create_out_tensor(sentence, lambda_term):
     # then for every offset that is not in the map, tokenize it as a character or word as suitable
     # for every offset in lambda term that is in the map, replace w the tokens in the corresponding list as value in the first map
 
-    #convert the la
-
     # making the first map
-    t = TreebankWordTokenizer()
-    words = t.tokenize(sentence)
+    # t = TreebankWordTokenizer()
+    # words = t.tokenize(sentence)
+    words = " ".join(sentence).replace("...}"," ...}").replace("{..","{. .").replace("NP.","NP .").replace("NP—","NP —").replace(",}"," ,}").\
+    replace("'re"," 're").replace("'s"," 's").replace("'ve}"," 've}").replace("!}"," !}").replace("?}"," ?}").replace("n't"," n't").\
+    replace("'m}"," 'm}").replace("{. ..","{...").replace("{——}","{— —}").replace("{--—}","{- -—}").replace("St.", "St").split()
+    
+    words = [word[:-1] for i, word in enumerate(words) if i % 2 != 0]
+
+    ind_letters = set()
+
+    for i, word in enumerate(words):
+        if "." in word and len(list(set(word))) != 1: words[i] = words[i].replace(".", "")
+        if len(word) == 1 and word.isalpha(): ind_letters.add(i)
+    
+    replacement = "J"
+    while replacement in words:
+        replacement = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[random.randint(0, 25)]
 
     tokens = TOKENIZER(" ".join(words), add_special_tokens=True, return_tensors="pt")
     word_mapping = tokens.words()
     word_mapping[0] = -1
     word_mapping[-1] = -1
+
+    # print(words)
 
     #get the bert embedding:
     representations = get_bert_emb(tokens)
@@ -577,48 +609,72 @@ def create_out_tensor(sentence, lambda_term):
     #ptb tokenize the lambda term 
     lambda_term_list = []
     acc = ""
+
+    weird_dots = re.findall(r"<w_\d+>", lambda_term)
+    for i, dot in enumerate(weird_dots):
+        lambda_term = lambda_term.replace(dot, f"..._{i+1000}")
+
     for char in lambda_term:
         if char in "( )":
             if acc != "":
                 lambda_term_list.append(acc)
                 acc = ""
             if char != " ": lambda_term_list.append(char)
-        else: acc += char
+        else: 
+            acc += char
     replace_copy = lambda_term_list.copy()
     term_to_word_index = {}
+    # print(lambda_term_list)
+
+    #first compile a list of variable positions:
+    var_logs = []
+    lambda_pattern = re.compile(r"λ\w+_\d+\.")
+    for i, element in enumerate(lambda_term_list):
+        if lambda_pattern.match(element)is not None:
+            var_logs.append(element[1:-1])
 
     for w, word in enumerate(words):
         #find if this constitutes an entity in the lambda term
         #entities are of the form words_dddd
-        word = word
+        if word == "(": word = "LRB"
+        elif word == ")": word = "RRB"
+        elif word == "[": word = "LSB"
+        elif word == "]": word = "RSB"
+        elif word == "{": word = "LCB"
+        elif word == "}": word = "RCB"
+        # word = word
+        if "λ" in word: word = word.replace("λ", "")
         if word not in lambda_term: continue
         #traverse the lambda_term 
-        min_indx, min_no = 1000, 1000
+        min_indx, min_no = 500000, 500000
         for i, term in enumerate(lambda_term_list):
-            if term.split("_")[0] == word:
-                no = int(term.split("_")[1])
+            if re.findall(r"_\d+", term) and term[: term.rfind(re.findall(r"_\d+", term)[0])] == word and term not in var_logs and "_" in term:
+                no = int(term[term.rfind(re.findall(r"_\d+", term)[0])+1:])
                 if no < min_no:
                     min_no = no
                     min_indx = i
-        if min_indx == 1000: continue
+        if min_indx == 500000: continue
         #replace with something random
-        lambda_term_list[min_indx] = "J"*len(word)
+        lambda_term_list[min_indx] = replacement*len(word)
         term_to_word_index[min_indx] = w
 
     lambda_term_list = replace_copy
 
     lambda_term_embedding = []
-    var_mask, lambda_mask = [], []
+    var_mask, lambda_mask, app_mask = [], [], []
 
-    lambda_pattern = re.compile(r"λ\w+_\d+\.")
-    var_pattern1 = re.compile(r"S+_\d+")
-    var_pattern2 = re.compile(r"NP+_\d+")
+ 
+    var_pattern1 = re.compile(r"S_\d+")
+    var_pattern2 = re.compile(r"NP_\d+")
+    var_pattern3 = re.compile(r"N_\d+")
+    var_pattern4 = re.compile(r"PP_\d+")
     entity_pattern = re.compile(r".*_\d+")
 
     var_logs = []
     for i, element in enumerate(lambda_term_list):
         if element == "(" or element == ")":
-            lambda_term_embedding.append(CLOSE_RRB if element == ")" else OPEN_RRB)
+            lambda_term_embedding.append("loo" if element == ")" else OPEN_RRB)
+            app_mask.append(1)
             lambda_mask.append(0)
             var_mask.append(0)
         elif lambda_pattern.match(element)is not None:
@@ -630,22 +686,44 @@ def create_out_tensor(sentence, lambda_term):
             var_logs.append(element[1:-1])
             lambda_mask.append(0)
             var_mask.append(len(var_logs))
-        elif var_pattern1.match(element) is not None or var_pattern2.match(element) is not None:
+        elif (var_pattern1.match(element) is not None or var_pattern2.match(element) is not None or var_pattern3.match(element) is not None or var_pattern4.match(element) is not None) and element in var_logs:
             assert element in var_logs, "Variable not found in lambda term?? "+lambda_term + " " + element
             lambda_term_embedding.append(torch.rand((768,)).tolist())
             lambda_mask.append(0)
             var_mask.append(var_logs.index(element)+1)
         else:
             assert entity_pattern.match(element), "Invalid lambda term ?? " + element
-            print(element, i, term_to_word_index)
-            lambda_term_embedding.extend(representations[word_mapping == term_to_word_index[i]])
+            lambda_term_embedding.extend(representations.squeeze(0)[torch.tensor(word_mapping) == term_to_word_index[i]])
             lambda_mask.append(0)
             var_mask.append(0)
+    return representations, torch.tensor(lambda_term_embedding), var_mask, lambda_mask, app_mask
 
-    return torch.tensor(lambda_term_embedding), var_mask, lambda_mask
 
+if __name__ == "__main__":
+    import pandas as pd
+    import os
+    from tqdm import tqdm
+    df = pd.read_csv("data/input_sentences.csv", header=None)
+    sentences = len(df)     
 
-                
+    for i in tqdm(range(sentences)):
+        # error here: i+9 + 56+75+477+25, i+9 + 56+75+477+26+128, i+9 + 56+75+477+26+129+278, i+9 + 56+75+477+26+129+279+111+724, i+9 + 56+75+477+26+129+279+111+725+482, i+9 + 56+75+477+26+129+279+111+725+483+6606+3757, i+9 + 56+75+477+26+129+279+111+725+483+6606+3757+157, i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5809, i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5809+4, i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5809+4+2113, i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5810+5+2114 + 2626,i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5810+5+2114 + 2626 + 1396,i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5810+5+2114+2627+1398+200, i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5810+5+2114+2627+1398+200+3440, +4453, +28,+10447, +5700
+        i = i+6289
+        gen_sent = eval(df.iloc[i, 1])
+
+        path = df.iloc[i, 2]
+        path = "/w/150/lambda_squad/lambdaBERT/data/" + path[len("lambdaBERT/data/"):]
+        with open(path, 'r') as f:
+            lambda_terms = f.readlines()[0].strip()
+        lambda_terms = lambda_terms.replace(")", "")
+        sent_emb, target_emb, var_mask, lambda_mask, app_mask = create_out_tensor(gen_sent, lambda_terms)
+        # print(target_emb)
+        # print(var_mask)
+        # print(lambda_mask)
+        # print(f"data/lambda_terms/{df.iloc[0, 2][:-4]}.pt")
+        torch.save((target_emb, var_mask, lambda_mask), f"/w/150/lambda_squad/{df.iloc[0, 2][:-4]}.pt")
+        
+
         
         
         
