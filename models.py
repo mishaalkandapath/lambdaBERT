@@ -371,7 +371,7 @@ class ShuffledTransformerStack(L.LightningModule):
     def validation_step(self, batch, batch_idx):
         criterion = nn.MSELoss()
         class_criterion = nn.CrossEntropyLoss()
-        in_embs, target_embs, var_index_mask_no, lambda_index_mask, app_index_mask, in_pad_mask, pad_mask = batch
+        in_embs, target_embs, var_index_mask_no, lambda_index_mask, app_index_mask, pad_mask = batch
         
 
         with torch.no_grad():
@@ -384,8 +384,8 @@ class ShuffledTransformerStack(L.LightningModule):
             #offset the masks by one 
             lambda_index_mask, app_index_mask, var_index_mask_no, pad_mask = (lambda_index_mask[:, 1:], app_index_mask[:, 1:], var_index_mask_no[:, 1:], pad_mask[:, 1:])
 
-            loss = criterion(out[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | pad_mask)],
-                            target[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | pad_mask)])
+            loss = criterion(out[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | app_index_mask | pad_mask)],
+                            target[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | app_index_mask | pad_mask)])
             
             self.log("val_loss_tokens", loss, batch_size=out.size(0), sync_dist=True)
             if out[lambda_index_mask].reshape(-1, out.size(-1)).shape[0] != 0:
@@ -456,20 +456,7 @@ class ShuffledTransformerStack(L.LightningModule):
         criterion = nn.MSELoss()
 
         class_criterion = nn.CrossEntropyLoss()
-        (seq, target_embs, var_index_mask_no, lambda_index_mask, app_index_mask, pad_mask) = batch
-
-        #tokenize the sqequences
-        tokenized, in_pad_mask = tokenization.create_out_embeddings(seq)
-
-        tokenization.BERT_MODEL.to(self.device)
-        tokenized.to(self.device)
-        #get the bert embeddings
-        in_embs = tokenization.get_bert_emb(tokenized)
-        #mask out the pads:
-        in_embs[in_pad_mask] = torch.zeros_like(in_embs[0, 0, :])
-
-        #get the bert embeddings for the target sequence
-        tokenization.BERT_MODEL.to('cpu')
+        (in_embs, target_embs, var_index_mask_no, lambda_index_mask, app_index_mask, pad_mask) = batch
         
         out, classified_class, var_reg = self.model(target_embs[:, :-1, :], in_embs)
         target = target_embs[:, 1:, :]
@@ -478,8 +465,8 @@ class ShuffledTransformerStack(L.LightningModule):
         #offset the masks by one 
         lambda_index_mask, app_index_mask, var_index_mask_no, pad_mask = (lambda_index_mask[:, 1:], app_index_mask[:, 1:], var_index_mask_no[:, 1:], pad_mask[:, 1:])
 
-        loss = criterion(out[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | pad_mask)],
-                        target[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | pad_mask)])
+        loss = criterion(out[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | app_index_mask | pad_mask)],
+                        target[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | app_index_mask | pad_mask)])
         
 
         self.log("train_loss_tokens", loss, batch_size=out.size(0), sync_dist=True) 
@@ -579,7 +566,7 @@ def main(hparams=None, load_chckpnt=False, shuffled=False):
 
     logger = WandbLogger(log_model="all", project="lambdaBERT", entity="mishaalkandapath") #CSVLogger(SAVE_DIR+"logs_after_5/")
     trainer = L.Trainer(max_epochs=50, log_every_n_steps=1, num_sanity_val_steps=0, logger=logger, default_root_dir=SAVE_DIR+"models/")
-    train_dataloader, val_dataloader = dataloader.data_init(10, shuffled=shuffled)
+    train_dataloader, val_dataloader = dataloader.data_init(50, shuffled=shuffled)
     trainer.fit(model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
 
 

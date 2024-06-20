@@ -671,6 +671,9 @@ def create_out_tensor(sentence, lambda_term):
     entity_pattern = re.compile(r".*_\d+")
 
     var_logs = []
+    # print(lambda_term_list)
+    # print(term_to_word_index)
+    # print(words)
     for i, element in enumerate(lambda_term_list):
         if element == "(" or element == ")":
             lambda_term_embedding.append("loo" if element == ")" else OPEN_RRB)
@@ -681,21 +684,28 @@ def create_out_tensor(sentence, lambda_term):
             lambda_term_embedding.append(LAMBDA)
             var_mask.append(0)
             lambda_mask.append(1)
+            app_mask.append(0)
 
             lambda_term_embedding.append(torch.rand((768,)))
             var_logs.append(element[1:-1])
             lambda_mask.append(0)
             var_mask.append(len(var_logs))
+            app_mask.append(0)
         elif (var_pattern1.match(element) is not None or var_pattern2.match(element) is not None or var_pattern3.match(element) is not None or var_pattern4.match(element) is not None) and element in var_logs:
             assert element in var_logs, "Variable not found in lambda term?? "+lambda_term + " " + element
             lambda_term_embedding.append(torch.rand((768,)).tolist())
             lambda_mask.append(0)
             var_mask.append(var_logs.index(element)+1)
+            app_mask.append(0)
         else:
             assert entity_pattern.match(element), "Invalid lambda term ?? " + element
+            counts = torch.count_nonzero(torch.tensor(word_mapping) == term_to_word_index[i])
             lambda_term_embedding.extend(representations.squeeze(0)[torch.tensor(word_mapping) == term_to_word_index[i]])
-            lambda_mask.append(0)
-            var_mask.append(0)
+            lambda_mask.extend([0]*counts)
+            var_mask.extend([0]*counts)
+            app_mask.extend([1]*counts)
+
+        assert len(var_mask) == len(lambda_mask) == len(lambda_term_embedding) == len(app_mask), f"{len(var_mask)} {len(lambda_mask)} {len(app_mask)} {len(lambda_term_embedding)}"
     return representations, torch.tensor(lambda_term_embedding), var_mask, lambda_mask, app_mask
 
 
@@ -708,7 +718,6 @@ if __name__ == "__main__":
 
     for i in tqdm(range(sentences)):
         # error here: i+9 + 56+75+477+25, i+9 + 56+75+477+26+128, i+9 + 56+75+477+26+129+278, i+9 + 56+75+477+26+129+279+111+724, i+9 + 56+75+477+26+129+279+111+725+482, i+9 + 56+75+477+26+129+279+111+725+483+6606+3757, i+9 + 56+75+477+26+129+279+111+725+483+6606+3757+157, i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5809, i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5809+4, i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5809+4+2113, i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5810+5+2114 + 2626,i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5810+5+2114 + 2626 + 1396,i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5810+5+2114+2627+1398+200, i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5810+5+2114+2627+1398+200+3440, +4453, +28,+10447, +5700
-        i = i+6289
         gen_sent = eval(df.iloc[i, 1])
 
         path = df.iloc[i, 2]
@@ -720,10 +729,35 @@ if __name__ == "__main__":
         # print(target_emb)
         # print(var_mask)
         # print(lambda_mask)
-        # print(f"data/lambda_terms/{df.iloc[0, 2][:-4]}.pt")
-        torch.save((target_emb, var_mask, lambda_mask), f"/w/150/lambda_squad/{df.iloc[0, 2][:-4]}.pt")
+        # print(f"/w/150/lambda_squad/{df.iloc[i, 2][:-4]}.pt")
+        torch.save((sent_emb, target_emb, var_mask, lambda_mask, app_mask), f"/w/150/lambda_squad/{df.iloc[i, 2][:-4]}.pt")
         
+    # for i in [67254, 57102, 40593, 43650]:
+    #     gen_sent = eval(df.iloc[i, 1])
+    #     words = " ".join(gen_sent).replace("...}"," ...}").replace("{..","{. .").replace("NP.","NP .").replace("NP—","NP —").replace(",}"," ,}").\
+    # replace("'re"," 're").replace("'s"," 's").replace("'ve}"," 've}").replace("!}"," !}").replace("?}"," ?}").replace("n't"," n't").\
+    # replace("'m}"," 'm}").replace("{. ..","{...").replace("{——}","{— —}").replace("{--—}","{- -—}").replace("St.", "St").split()
+    #     words = [word[:-1] for i, word in enumerate(words) if i % 2 != 0]
 
+    #     tokens = TOKENIZER(" ".join(words), add_special_tokens=True, return_tensors="pt")
+    #     representations = get_bert_emb(tokens)
+
+    #     path = df.iloc[i, 2]
+    #     sent_emb = representations
+    #     target_emb = representations[0, 1, :].reshape((1, 1, 768))
+    #     var_mask = [0]
+    #     lambda_mask = [0]
+    #     app_mask = [0]
+    #     # target_emb = representations[]
+    #     torch.save((sent_emb, target_emb, var_mask, lambda_mask, app_mask), f"/w/150/lambda_squad/{df.iloc[i, 2][:-4]}.pt")
+
+
+
+
+
+
+        
+        
         
         
         
