@@ -661,6 +661,7 @@ def create_out_tensor(sentence, lambda_term):
     lambda_term_list = replace_copy
 
     lambda_term_embedding = []
+    lambda_term_tokens = []
     var_mask, lambda_mask, app_mask = [], [], []
 
  
@@ -680,33 +681,39 @@ def create_out_tensor(sentence, lambda_term):
             app_mask.append(1)
             lambda_mask.append(0)
             var_mask.append(0)
+            lambda_term_tokens.append(-1)
         elif lambda_pattern.match(element)is not None:
             lambda_term_embedding.append(LAMBDA)
             var_mask.append(0)
             lambda_mask.append(1)
             app_mask.append(0)
+            lambda_term_tokens.append(-1)
 
             lambda_term_embedding.append(torch.rand((768,)))
             var_logs.append(element[1:-1])
             lambda_mask.append(0)
             var_mask.append(len(var_logs))
             app_mask.append(0)
+            lambda_term_tokens.append(-1)
         elif (var_pattern1.match(element) is not None or var_pattern2.match(element) is not None or var_pattern3.match(element) is not None or var_pattern4.match(element) is not None) and element in var_logs:
             assert element in var_logs, "Variable not found in lambda term?? "+lambda_term + " " + element
             lambda_term_embedding.append(torch.rand((768,)).tolist())
             lambda_mask.append(0)
             var_mask.append(var_logs.index(element)+1)
             app_mask.append(0)
+            lambda_term_tokens.append(-1)
         else:
             assert entity_pattern.match(element), "Invalid lambda term ?? " + element
             counts = torch.count_nonzero(torch.tensor(word_mapping) == term_to_word_index[i])
             lambda_term_embedding.extend(representations.squeeze(0)[torch.tensor(word_mapping) == term_to_word_index[i]])
+            lambda_term_tokens.extend(tokens.input_ids[0][torch.tensor(word_mapping) == term_to_word_index[i]].tolist())
+
             lambda_mask.extend([0]*counts)
             var_mask.extend([0]*counts)
-            app_mask.extend([1]*counts)
+            app_mask.extend([0]*counts)
 
-        assert len(var_mask) == len(lambda_mask) == len(lambda_term_embedding) == len(app_mask), f"{len(var_mask)} {len(lambda_mask)} {len(app_mask)} {len(lambda_term_embedding)}"
-    return representations, torch.tensor(lambda_term_embedding), var_mask, lambda_mask, app_mask
+        assert len(var_mask) == len(lambda_mask) == len(lambda_term_embedding) == len(app_mask) == len(lambda_term_tokens), f"{len(var_mask)} {len(lambda_mask)} {len(app_mask)} {len(lambda_term_embedding)} {len(lambda_term_tokens)}"
+    return representations, torch.tensor(lambda_term_embedding), lambda_term_tokens, var_mask, lambda_mask, app_mask
 
 
 if __name__ == "__main__":
@@ -725,12 +732,12 @@ if __name__ == "__main__":
         with open(path, 'r') as f:
             lambda_terms = f.readlines()[0].strip()
         lambda_terms = lambda_terms.replace(")", "")
-        sent_emb, target_emb, var_mask, lambda_mask, app_mask = create_out_tensor(gen_sent, lambda_terms)
+        sent_emb, target_emb, target_tokens, var_mask, lambda_mask, app_mask = create_out_tensor(gen_sent, lambda_terms)
         # print(target_emb)
         # print(var_mask)
         # print(lambda_mask)
         # print(f"/w/150/lambda_squad/{df.iloc[i, 2][:-4]}.pt")
-        torch.save((sent_emb, target_emb, var_mask, lambda_mask, app_mask), f"/w/150/lambda_squad/{df.iloc[i, 2][:-4]}.pt")
+        torch.save((sent_emb, target_emb, target_tokens, var_mask, lambda_mask, app_mask), f"/w/150/lambda_squad/{df.iloc[i, 2][:-4]}.pt")
         
     # for i in [67254, 57102, 40593, 43650]:
     #     gen_sent = eval(df.iloc[i, 1])
