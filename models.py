@@ -565,6 +565,7 @@ class DiscreteTransformerStack(L.LightningModule):
         
     def validation_step(self, batch, batch_idx):
         criterion = nn.MSELoss()
+        token_criterion = nn.CrossEntropyLoss()
         class_criterion = nn.CrossEntropyLoss()
         in_embs, target_embs, target_tokens, var_index_mask_no, lambda_index_mask, app_index_mask, pad_mask = batch
         
@@ -574,26 +575,25 @@ class DiscreteTransformerStack(L.LightningModule):
             # var_index_mask_no = torch.roll(var_index_mask_no, -1, 1) # shift one back coz nps and _ have been moved to the back -- RETIRED: NOW DONE IN process_bert_lambda
             out, classified_class, var_reg = self.model(target_embs[:, :-1, :], in_embs)
             target = target_embs[:, 1:, :]
-            target_tokens = target_tokens[:, 1:, :]
+            target_tokens = target_tokens[:, 1:]
             
             #no mse for the pads, variables, lambda or anything else. jus tthe actual embeddings
             #offset the masks by one 
             lambda_index_mask, app_index_mask, var_index_mask_no, pad_mask = (lambda_index_mask[:, 1:], app_index_mask[:, 1:], var_index_mask_no[:, 1:], pad_mask[:, 1:])
 
-            # loss = criterion(out[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | app_index_mask | pad_mask)],
-            #                 target[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | app_index_mask | pad_mask)])
             target_tokens = target_tokens.to(self.device)
             target_tokens[target_tokens == -1] = 0
-            target_tokens = nn.functional.one_hot(target_tokens, num_classes=self.linear.out_features).to(dtype=torch.float32)
-            if self.finetune: out = out.detach() # no grad, just train the classifier
-            out = self.linear(out)
-            loss = criterion(self.linear(out[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | app_index_mask | pad_mask)]), target_tokens[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | app_index_mask | pad_mask)])
+            target_tokens = nn.functional.one_hot(target_tokens.long(), num_classes=self.linear.out_features).to(dtype=torch.float32).to(self.device)
+            token_out = self.linear(out.detach() if self.finetune else out)
+            loss = token_criterion(token_out[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | app_index_mask | pad_mask)], target_tokens[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | app_index_mask | pad_mask)]).mean()
+            if not self.finetune: loss += criterion(out[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | app_index_mask | pad_mask)],
+                            target[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | app_index_mask | pad_mask)]).mean()
             
             self.log("val_loss_tokens", loss, batch_size=out.size(0), sync_dist=True)
             if out[lambda_index_mask].reshape(-1, out.size(-1)).shape[0] != 0 and not self.finetune:
                 gt_cls_mask = var_index_mask_no.type(torch.bool) + 2*lambda_index_mask.type(torch.bool) + 3*app_index_mask.type(torch.bool)
                 classifier_loss = class_criterion(classified_class.view(-1, 4), gt_cls_mask.view(-1))
-                loss += classifier_loss
+                loss += classifier_loss.mean()
 
                 self.log("val_loss_classifier", classifier_loss, batch_size=out.size(0), sync_dist=True)
 
@@ -612,7 +612,7 @@ class DiscreteTransformerStack(L.LightningModule):
                 # var_loss = torch.sqrt(var_loss)
                 var_loss = torch.mean(torch.sum(var_loss.sum(dim=-1).squeeze(-1), dim=-1))
                 # print(var_loss.sum())
-                loss += var_loss
+                loss += var_loss.mean()
 
                 self.log("val_loss_variance", var_loss, batch_size=out.size(0), sync_dist=True)
 
@@ -656,6 +656,7 @@ class DiscreteTransformerStack(L.LightningModule):
 
     def training_step(self, batch, batch_idx):
         criterion = nn.MSELoss()
+        token_criterion = nn.CrossEntropyLoss()
 
         if self.finetune: self.model.eval()
 
@@ -676,17 +677,13 @@ class DiscreteTransformerStack(L.LightningModule):
         
         target_tokens = target_tokens.to(self.device)
         target_tokens[target_tokens == -1] = 0
-        # target_tokens = target_tokens.unsqueeze(-1)
-        # temp_tokens[target_tokens.long()] = 1
-        # target_tokens = temp_tokens.to(dtype=torch.float32)
-        target_tokens = nn.functional.one_hot(target_tokens.long(), num_classes=self.linear.out_features).to(dtype=torch.float32)
-
-        #change to one hot instead of indices
-        target_tokens = nn.functional.one_hot(target_tokens.long(), num_classes=self.linear.out_features).to(dtype=torch.float32)
+        target_tokens = nn.functional.one_hot(target_tokens.long(), num_classes=self.linear.out_features).to(dtype=torch.float32).to(self.device)
         
-        if self.finetune: out = out.detach() # no grad, just train the classifier
-        out = self.linear(out)
-        loss = criterion((out[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | app_index_mask | pad_mask)]), target_tokens[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | app_index_mask | pad_mask)])
+        token_out = self.linear(out.detach() if self.finetune else out)
+        loss = token_criterion((token_out[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | app_index_mask | pad_mask)]), target_tokens[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | app_index_mask | pad_mask)]).mean()
+        if not self.finetune: 
+            loss += criterion(out[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | app_index_mask | pad_mask)],
+                            target[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | app_index_mask | pad_mask)]).mean()
             
         self.log("train_loss_tokens", loss, batch_size=out.size(0), sync_dist=True)
         if out[lambda_index_mask].reshape(-1, out.size(-1)).shape[0] != 0 and not self.finetune:
@@ -699,7 +696,7 @@ class DiscreteTransformerStack(L.LightningModule):
             # self.log("train_loss_lambdas", lambda_loss, batch_size=out.size(0), sync_dist=True) 
             gt_cls_mask = var_index_mask_no.type(torch.bool) + 2*lambda_index_mask.type(torch.bool) + 3*app_index_mask.type(torch.bool) #because lambda's class is 2
             classifier_loss = class_criterion(classified_class.view(-1, 4), gt_cls_mask.view(-1))
-            loss += classifier_loss
+            loss += classifier_loss.mean()
 
             self.log("train_loss_classifier", classifier_loss, batch_size=out.size(0), sync_dist=True)
 
@@ -720,7 +717,7 @@ class DiscreteTransformerStack(L.LightningModule):
             # var_loss = torch.sqrt(var_loss)
             var_loss = torch.mean(torch.sum(var_loss.sum(dim=-1).squeeze(-1), dim=-1))
             # print(var_loss.sum())
-            loss += var_loss
+            loss += var_loss.mean()
 
             self.log("train_loss_variance", var_loss, batch_size=out.size(0), sync_dist=True)
 
@@ -790,14 +787,14 @@ def main(hparams=None, load_chckpnt=False, shuffled=False, discrete=False, finet
 
     logger = WandbLogger(log_model="all", project="lambdaBERT", entity="mishaalkandapath") #CSVLogger(SAVE_DIR+"logs_after_5/")
     trainer = L.Trainer(max_epochs=50, log_every_n_steps=1, num_sanity_val_steps=0, logger=logger, default_root_dir=SAVE_DIR+"models/")
-    train_dataloader, val_dataloader = dataloader.data_init(10, shuffled=shuffled or discrete)
+    train_dataloader, val_dataloader = dataloader.data_init(70 if not finetune else 150, shuffled=shuffled or discrete)
     trainer.fit(model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
 
 
 if __name__ == "__main__":
     #make arg parser
     #set visible gpus:
-    os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
     os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
     L.seed_everything(0)
 
