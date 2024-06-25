@@ -240,11 +240,11 @@ class ShuffledLambdaTermsDataset(Dataset):
 
         
         #sep token for target embedding:
-        target_embs = torch.cat([target_embs, torch.tensor(SEP_TOKEN).squeeze(0)], dim=0)
-        target_tokens = target_tokens + [102]
-        lambda_index_mask.append(0)
-        var_index_mask_no.append(0)
-        app_index_mask.append(0)
+        target_embs = torch.cat([torch.tensor(SEP_TOKEN).squeeze(0), target_embs, torch.tensor(SEP_TOKEN).squeeze(0)], dim=0)
+        target_tokens = [102] + target_tokens + [102]
+        lambda_index_mask = [0] + lambda_index_mask + [0]
+        var_index_mask_no = [0] + var_index_mask_no + [0]
+        app_index_mask = [0] + app_index_mask + [0]
         
         return sent_embs, target_embs, target_tokens, lambda_index_mask, var_index_mask_no, app_index_mask
 
