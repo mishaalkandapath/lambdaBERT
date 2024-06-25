@@ -11,7 +11,7 @@ from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence
 #create a directory where the key is a csv. each row has first column as the raw text sentence, and the second col being the 
 # path to the file that stores all its lambda terms
 
-DATA_PATH = "/w/150/lambda_squad/lambdaBERT/data/"
+DATA_PATH = "/home/mishaalk/projects/def-gpenn/mishaalk/lambdaBERT/data/"
 
 SEP_TOKEN = [[[ 7.6267e-01,  8.9944e-03, -3.6583e-01,  1.9516e-01, -4.8590e-01,
           -2.4512e-01,  5.0226e-01, -4.1119e-01,  4.1043e-01, -9.3080e-02,
