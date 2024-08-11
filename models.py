@@ -560,7 +560,7 @@ class DiscreteTransformerStack(L.LightningModule):
     def __init__(self, model, finetune=False):
         super().__init__()
         self.model = model
-        self.linear = nn.Linear(768, TOKENIZER.vocab_size)
+        self.linear = nn.Sequential(nn.Linear(768, 768), nn.ReLU(), nn.Linear(768, TOKENIZER.vocab_size))
         self.finetune= finetune
         
     def validation_step(self, batch, batch_idx):
@@ -677,7 +677,7 @@ class DiscreteTransformerStack(L.LightningModule):
         
         target_tokens = target_tokens.to(self.device)
         target_tokens[target_tokens == -1] = 0
-        target_tokens = nn.functional.one_hot(target_tokens.long(), num_classes=self.linear.out_features).to(dtype=torch.float32).to(self.device)
+        target_tokens = nn.functional.one_hot(target_tokens.long(), num_classes=self.linear[-1].out_features).to(dtype=torch.float32).to(self.device)
         
         token_out = self.linear(out.detach() if self.finetune else out)
         loss = token_criterion((token_out[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | app_index_mask | pad_mask)]), target_tokens[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | app_index_mask | pad_mask)]).mean()
@@ -786,15 +786,15 @@ def main(hparams=None, load_chckpnt=False, shuffled=False, discrete=False, finet
         model = wrapper(model)
 
     logger = WandbLogger(log_model="all", project="lambdaBERT", entity="mishaalkandapath") #CSVLogger(SAVE_DIR+"logs_after_5/")
-    trainer = L.Trainer(max_epochs=50, log_every_n_steps=1, num_sanity_val_steps=0, logger=logger, default_root_dir=SAVE_DIR+"models/")
-    train_dataloader, val_dataloader = dataloader.data_init(70 if not finetune else 150, shuffled=shuffled or discrete)
+    trainer = L.Trainer(max_epochs=150, log_every_n_steps=1, num_sanity_val_steps=0, logger=logger, default_root_dir=SAVE_DIR+"models/")
+    train_dataloader, val_dataloader = dataloader.data_init(150 if not finetune else 150, shuffled=shuffled or discrete)
     trainer.fit(model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
 
 
 if __name__ == "__main__":
     #make arg parser
     #set visible gpus:
-    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+    # os.environ["CUDA_VISIBLE_DEVICES"] = "0"
     os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
     L.seed_everything(0)
 
