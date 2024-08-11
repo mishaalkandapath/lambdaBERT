@@ -1,9 +1,12 @@
-import torch 
 import matplotlib.pyplot as plt
 from models import *
 import dataloader
-import tqdm
+import tqdm, csv, random, pandas as pd
 from tokenization import get_bert_emb, TOKENIZER
+from dataloader import SEP_TOKEN
+
+import torch 
+import torch.nn as nn
 
 
 #model inference
@@ -46,6 +49,7 @@ def plot_confusion_matrix(confusion_matrix):
     plt.savefig("confusion_matrix.png")
 
 def get_discrete_output(input_sent, model):
+    model.eval()
     #bert tokenize and get embeddings
     tokenized = TOKENIZER(input_sent, return_tensors="pt", padding=True)
     input_embs = get_bert_emb(tokenized)
@@ -53,12 +57,8 @@ def get_discrete_output(input_sent, model):
     #model inference
     out, classified_class, var_reg = model(input_embs)
     classified_class = classified_class.argmax(dim=-1).squeeze(0)
-    out = out.squeeze(0)
     var_reg = var_reg.squeeze(0)
-    out = out.argmax(dim=-1)[]
-    out.argmax(dim=-1)[classified_class] = 0
-    out_list = TOKENIZER.convert_ids_to_tokens(out.tolist())
-    
+    out_list = TOKENIZER.convert_ids_to_tokens(out)
     lambda_indices, app_indices, var_indices  = torch.where(classified_class == 2), torch.where(classified_class == 3), torch.where(classified_class == 1)
     for i in lambda_indices:
         out_list[i] = "λ"
@@ -86,6 +86,29 @@ def get_discrete_output(input_sent, model):
                 out_list[i] = f"x{len(var_dict)}"
     return " ".join(out_list)
 
+class ClassifierModel(nn.Module):
+    def __init__(self, model, linear):
+        super().__init__()
+        self.model = model
+        self.linear = linear
+    
+    def forward(self, in_embs):
+        x = torch.tensor(SEP_TOKEN).to(in_embs.device)
+        out_stacked, classified_class_stacked, var_reg_stacked, newest_out = None, None, None, None
+        list_out = []
+        while newest_out != 102:
+            out, classified_class, var_reg = self.model(x, in_embs)
+            if out_stacked is None:
+                out_stacked, classified_class_stacked, var_reg_stacked = out, classified_class, var_reg
+            else:
+                out_stacked = torch.cat([out_stacked, out], dim=1)
+                classified_class_stacked = torch.cat([classified_class_stacked, classified_class], dim=1)
+                var_reg_stacked = torch.cat([var_reg_stacked, var_reg], dim=1)
+            newest_out = self.linear(out[0, -1, :]).argmax(-1)
+            list_out.append(newest_out)
+            x = out_stacked
+        return list_out, classified_class_stacked, var_reg_stacked
+
 if __name__ == "__main__":
     #arguments
     parser = argparse.ArgumentParser()
@@ -94,20 +117,52 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+    os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+
     #load model
     model = TransformerDecoderStack(4, 384, 8, 3072)
     checkpoint = torch.load(args.model_path)
     model_weights = {k.replace("model.", ""): v for k, v in checkpoint["state_dict"].items() if k.startswith("model.")}
     model.load_state_dict(model_weights)
 
+    linear = nn.Linear(768, TOKENIZER.vocab_size)
+    linear_weights = {k.replace("linear.", ""): v for k, v in checkpoint["state_dict"].items() if k.startswith("linear.")}
+    linear.load_state_dict(linear_weights)
+
+    model = ClassifierModel(model, linear)
+
     # model = ShuffledTransformerStack.load_from_checkpoint(args.model_path, model).model
     DEVICE = torch.device("cpu") if args.cpu else torch.device("cuda")
     model = model.to(DEVICE)
 
-    #load data
-    dataloader = dataloader.data_init(70, shuffled=True, mode=3)
+    # --LOAD DATA
+    # dataloader = dataloader.data_init(70, shuffled=True, mode=3)
 
-    confusion_matrix = model_inference(model, dataloader)
-    plot_confusion_matrix(confusion_matrix)
+
+    # -- CONFUSION MATRIX --
+    # confusion_matrix = model_inference(model, dataloader)
+    # plot_confusion_matrix(confusion_matrix)
+
+    # --DISCRETE OUTPUT SAMPLES
+    lines = pd.read_csv("data/input_sentences.csv", header=None)
+    out_file = open("data/output_samples.csv", "w")
+    out_file_csv = csv.writer(out_file)
+
+    rand_lines = random.choices(range(len(lines)), k=10)
+    write_lines = []
+    for rand_line in rand_lines:
+        line = eval(lines.iloc[rand_line, 1])
+        words = " ".join(line).replace("...}"," ...}").replace("{..","{. .").replace("NP.","NP .").replace("NP—","NP —").replace(",}"," ,}").\
+    replace("'re"," 're").replace("'s"," 's").replace("'ve}"," 've}").replace("!}"," !}").replace("?}"," ?}").replace("n't"," n't").\
+    replace("'m}"," 'm}").replace("{. ..","{...").replace("{——}","{— —}").replace("{--—}","{- -—}").replace("St.", "St").split()
+        
+        words = [word[:-1] for i, word in enumerate(words) if i % 2 != 0]
+        words = " ".join(words)
+
+        write_lines.append([rand_line, get_discrete_output(words, model)])
+    out_file.writelines(write_lines)
+
+
 
 

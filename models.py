@@ -91,7 +91,7 @@ class TransformerDecoderStack(nn.Module):
 
         outputs = self.initial_forward(outputs)
         emb = self.initial_forward(emb)
-        #mask the sequence of autoregressivity
+        #mask the sequence for autorregressive
         tgt_mask = torch.nn.Transformer.generate_square_subsequent_mask(seq.size(1)).to(emb.device)
 
         final_class_emb_help = None
