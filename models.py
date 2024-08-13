@@ -123,242 +123,6 @@ class TransformerDecoderStack(nn.Module):
         # var_emb = torch.zeros(outputs.shape[:-1] + (10, ))
         # classified_class = torch.zeros(outputs.shape[:-1] + (3,))
         return outputs, classified_class, var_emb
-    
-class LitTransformerStack(L.LightningModule):
-    def __init__(self, model):
-        super().__init__()
-        self.model = model
-        #pick a random bunch of parameters:
-        # self.reference_param = None
-        # self.fin_reference = None
-
-    def validation_step(self, batch, batch_idx):
-        criterion = nn.MSELoss()
-        class_criterion = nn.CrossEntropyLoss()
-        (seq, target_seq) = batch
-        
-
-        with torch.no_grad():
-            tokenized, in_pad_mask = tokenization.create_out_embeddings(seq)
-            target_tokenized, lambda_index_mask, app_index_mask, var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask = tokenization.create_out_embeddings(target_seq, lamda=True)
-
-            tokenization.BERT_MODEL.to(self.device)
-            tokenized.to(self.device)
-
-            in_embs = tokenization.get_bert_emb(tokenized)
-            in_embs[in_pad_mask] = torch.zeros_like(in_embs[0, 0, :])
-
-            target_tokenized.to(self.device)
-            lambda_index_mask, app_index_mask, var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask = (lambda_index_mask.to(self.device), app_index_mask.to(self.device), var_index_mask.to(self.device), var_index_mask_underscore.to(self.device), var_index_mask_no.to(self.device), pad_mask.to(self.device))
-            target_embs, lambda_index_mask, app_index_mask, var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask = tokenization.process_bert_lambda(target_tokenized, lambda_index_mask, app_index_mask, (var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask), lambda_norm=True, var_norm=True)
-            target_embs, in_embs = target_embs.to(self.device), in_embs.to(self.device)
-            # var_index_mask_no = torch.roll(var_index_mask_no, -1, 1) # shift one back coz nps and _ have been moved to the back -- RETIRED: NOW DONE IN process_bert_lambda
-            tokenization.BERT_MODEL.to('cpu')
-
-            out, classified_class, var_reg = self.model(target_embs[:, :-1, :], in_embs)
-            target = target_embs[:, 1:, :]
-            
-            #no mse for the pads, variables, lambda or anything else. jus tthe actual embeddings
-            #offset the masks by one 
-            lambda_index_mask, app_index_mask, var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask = (lambda_index_mask[:, 1:], app_index_mask[:, 1:], var_index_mask[:, 1:], var_index_mask_underscore[:, 1:], var_index_mask_no[:, 1:], pad_mask[:, 1:])
-
-            loss = criterion(out[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | pad_mask)],
-                            target[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | pad_mask)])
-            
-            self.log("val_loss_tokens", loss, batch_size=out.size(0), sync_dist=True)
-            if out[lambda_index_mask].reshape(-1, out.size(-1)).shape[0] != 0:
-                # lambda_loss = criterion(out[lambda_index_mask].reshape(-1, out.size(-1)), target[lambda_index_mask].reshape(-1, out.size(-1))) # has to be consisten across batches
-
-                ##inconsisten version:
-                # lambda_loss = criterion(out[lambda_index_mask].reshape(-1, out.size(-1))[0:1, :].repeat(repeat_times, 1), out[lambda_index_mask].reshape(-1, out.size(-1))[1:, :])
-                # loss += lambda_loss.mean()
-
-                # self.log("val_loss_lambdas", lambda_loss, batch_size=out.size(0), sync_dist=True) 
-
-                gt_cls_mask = var_index_mask_no.type(torch.bool) + 2*lambda_index_mask.type(torch.bool) + 3*app_index_mask.type(torch.bool)
-                classifier_loss = class_criterion(classified_class.view(-1, 4), gt_cls_mask.view(-1))
-                loss += classifier_loss
-
-                self.log("val_loss_classifier", classifier_loss, batch_size=out.size(0), sync_dist=True)
-
-                #loss on variables: compute the variance on the variables
-                var_hot = nn.functional.one_hot(var_index_mask_no.long(), num_classes=torch.unique(var_index_mask_no).size(0))
-                # out_vars = out.unsqueeze(1) * var_hot.transpose(1, 2).unsqueeze(-1)
-                out_vars = var_reg.unsqueeze(1) * var_hot.transpose(1, 2).unsqueeze(-1)
-                
-                # ---- VARIANCE LOSS ----           
-                out_var_mean = out_vars.mean(dim=-2, keepdim=True) #* mean_rescale # average on the tokens
-                # print(torch.sum(out_var_mean * var_hot.transpose(1, 2).unsqueeze(-1)))
-                out_var_difference = out_vars - (out_var_mean * var_hot.transpose(1, 2).unsqueeze(-1))
-                # print(out_var_difference.sum())
-                var_loss = torch.mean(out_var_difference**2, dim=-2, keepdim=True) #* mean_rescale
-                # print(var_loss.sum())
-                # var_loss = torch.sqrt(var_loss)
-                var_loss = torch.mean(torch.sum(var_loss.sum(dim=-1).squeeze(-1), dim=-1))
-                # print(var_loss.sum())
-                loss += var_loss
-
-                self.log("val_loss_variance", var_loss, batch_size=out.size(0), sync_dist=True)
-
-                # --- COS SIM LOSS ----
-                out_vars_normed = (out_vars.pow(2).sum(dim=-1) + 1e-6).sqrt()
-                out_vars_normed = out_vars / out_vars_normed.unsqueeze(-1)
-                out_vars_sim = out_vars_normed @ out_vars_normed.transpose(-1, -2) # similarity within classes, everything else is 0
-                out_vars_sim_mask = var_hot.transpose(1, 2).unsqueeze(-1).to(dtype=torch.float32) @ var_hot.transpose(1, 2).unsqueeze(-2).to(dtype=torch.float32)
-                var_loss = 1 - (out_vars_sim + (out_vars_sim_mask == 0))
-                loss += var_loss.mean()
-
-                self.log("val_loss_vars", var_loss.mean(), batch_size=out.size(0), sync_dist=True)
-
-                # ---- Othogonality loss for Variance Loss
-                # ortho_loss = out_var_mean.squeeze(-2) @ out_var_mean.squeeze(-2).transpose(1, 2)
-                # #mask diagonals out
-                # ortho_loss = ortho_loss * (1 - torch.eye(ortho_loss.size(-1)).to(ortho_loss.device))
-                # loss += ortho_loss.mean()
-
-                # --- Ortho loss for sim loss
-                out_var_mean_normed = out_vars_normed.mean(dim=-2, keepdim=True)
-
-                # Common component for ortho loss
-                ortho_loss = out_var_mean_normed.squeeze(-2) @ out_var_mean_normed.squeeze(-2).transpose(-1, -2)
-
-                #mask diagonals out
-                ortho_loss = ortho_loss * (1 - torch.eye(ortho_loss.size(-1)).to(ortho_loss.device))
-                loss += torch.abs(ortho_loss.mean())
-
-                self.log("val_loss_ortho", ortho_loss.mean(), batch_size=out.size(0), sync_dist=True)
-
-                #VAR NORM LOSS
-                # norm_loss = 1 - (out_vars.pow(2).sum(dim=-1) + (var_hot.transpose(1, 2).unsqueeze(-1) == 0))
-                # loss += norm_loss.mean()
-
-                # self.log("val_norm_loss", norm_loss.mean(), batch_size=out.size(0), sync_dist=True)
-
-        self.log("val_loss", loss.mean(), batch_size=out.size(0), sync_dist=True, prog_bar=True) 
-
-        return loss
-
-    def training_step(self, batch, batch_idx):
-        criterion = nn.MSELoss()
-
-        class_criterion = nn.CrossEntropyLoss()
-        (seq, target_seq) = batch
-
-        #tokenize the sqequences
-        tokenized, in_pad_mask = tokenization.create_out_embeddings(seq)
-        target_tokenized, lambda_index_mask, app_index_mask, var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask = tokenization.create_out_embeddings(target_seq, lamda=True)
-
-        tokenization.BERT_MODEL.to(self.device)
-        tokenized.to(self.device)
-        #get the bert embeddings
-        in_embs = tokenization.get_bert_emb(tokenized)
-        #mask out the pads:
-        in_embs[in_pad_mask] = torch.zeros_like(in_embs[0, 0, :])
-
-        #get the bert embeddings for the target sequence
-        target_tokenized.to(self.device)
-        lambda_index_mask, app_index_mask, var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask = (lambda_index_mask.to(self.device), app_index_mask.to(self.device), var_index_mask.to(self.device), var_index_mask_underscore.to(self.device), var_index_mask_no.to(self.device), pad_mask.to(self.device))
-        target_embs, lambda_index_mask, app_index_mask, var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask = tokenization.process_bert_lambda(target_tokenized, lambda_index_mask, app_index_mask, (var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask), lambda_norm=True, var_norm=True)
-        # var_index_mask_no = torch.roll(var_index_mask_no, -1, 1) # shift one back coz nps and _ have been moved to the back
-        tokenization.BERT_MODEL.to('cpu')
-        
-        out, classified_class, var_reg = self.model(target_embs[:, :-1, :], in_embs)
-        target = target_embs[:, 1:, :]
-
-        #no mse for the pads, variables, lambda or anything else. jus tthe actual embeddings
-        #offset the masks by one 
-        lambda_index_mask, app_index_mask, var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask = (lambda_index_mask[:, 1:], app_index_mask[:, 1:], var_index_mask[:, 1:], var_index_mask_underscore[:, 1:], var_index_mask_no[:, 1:], pad_mask[:, 1:])
-
-        loss = criterion(out[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | pad_mask)],
-                        target[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | pad_mask)])
-        
-
-        self.log("train_loss_tokens", loss, batch_size=out.size(0), sync_dist=True) 
-        
-        #mse on lambdas
-        if out[lambda_index_mask].reshape(-1, out.size(-1)).shape[0] != 0:
-            # lambda_loss = criterion(out[lambda_index_mask].reshape(-1, out.size(-1)), target[lambda_index_mask].reshape(-1, out.size(-1))) # has to be consisten across batches
-
-            ##inconsisten version:
-            # lambda_loss = criterion(out[lambda_index_mask].reshape(-1, out.size(-1))[0:1, :].repeat(repeat_times, 1), out[lambda_index_mask].reshape(-1, out.size(-1))[1:, :])
-            # loss += lambda_loss.mean()
-
-            # self.log("train_loss_lambdas", lambda_loss, batch_size=out.size(0), sync_dist=True) 
-            gt_cls_mask = var_index_mask_no.type(torch.bool) + 2*lambda_index_mask.type(torch.bool) + 3*app_index_mask.type(torch.bool) #because lambda's class is 2
-            classifier_loss = class_criterion(classified_class.view(-1, 4), gt_cls_mask.view(-1))
-            # loss += classifier_loss
-
-            self.log("train_loss_classifier", classifier_loss, batch_size=out.size(0), sync_dist=True)
-
-            #loss on variables: compute the variance on the variables
-            var_hot = nn.functional.one_hot(var_index_mask_no.long(), num_classes=torch.unique(var_index_mask_no).size(0))
-            # out_vars = out.unsqueeze(1) * var_hot.transpose(1, 2).unsqueeze(-1) -- FOR PREVIOUS
-            var_hot = var_hot.to(dtype=torch.bool)
-            out_vars = var_reg.unsqueeze(1) * var_hot.transpose(1, 2).unsqueeze(-1)
-           
-            # ---- VARIANCE LOSS ----           
-            # mean_rescale = (out_vars.shape[-2]/torch.count_nonzero(out_vars.sum(dim=-1, keepdim=True), dim=-2)).unsqueeze(-1).detach()
-            out_var_mean = out_vars.mean(dim=-2, keepdim=True) #* mean_rescale # average on the tokens
-            # print(torch.sum(out_var_mean * var_hot.transpose(1, 2).unsqueeze(-1)))
-            out_var_difference = out_vars - (out_var_mean * var_hot.transpose(1, 2).unsqueeze(-1))
-            # print(out_var_difference.sum())
-            var_loss = torch.mean(out_var_difference**2, dim=-2, keepdim=True) #* mean_rescale
-            # print(var_loss.sum())
-            # var_loss = torch.sqrt(var_loss)
-            var_loss = torch.mean(torch.sum(var_loss.sum(dim=-1).squeeze(-1), dim=-1))
-            # print(var_loss.sum())
-            loss += var_loss
-
-            self.log("train_loss_variance", var_loss, batch_size=out.size(0), sync_dist=True)
-
-            # --- COS SIM LOSS ----
-            out_vars_normed = (out_vars.pow(2).sum(dim=-1) + 1e-6).sqrt()
-            out_vars_normed = out_vars / out_vars_normed.unsqueeze(-1)
-            out_vars_sim = out_vars_normed @ out_vars_normed.transpose(-1, -2) # similarity within classes, everything else is 0
-            out_vars_sim_mask = var_hot.transpose(1, 2).unsqueeze(-1).to(dtype=torch.float32) @ var_hot.transpose(1, 2).unsqueeze(-2).to(dtype=torch.float32)
-            var_loss = 1 - (out_vars_sim + (out_vars_sim_mask == 0))
-            loss += var_loss.mean()
-
-            self.log("train_loss_vars", var_loss.mean(), batch_size=out.size(0), sync_dist=True)
-            
-            # ---- Othogonality loss for Variance Loss
-            # out_var_mean_normed = torch.sum((out_var_mean ** 2), dim=-1, keepdim=True) + 1e-6
-            # out_var_mean_normed = out_var_mean / out_var_mean_normed
-
-            # --- Ortho loss for sim loss
-            out_var_mean_normed = out_vars_normed.mean(dim=-2, keepdim=True)
-
-            # Common component for ortho loss
-            ortho_loss = out_var_mean_normed.squeeze(-2) @ out_var_mean_normed.squeeze(-2).transpose(-1, -2)
-
-            #mask diagonals out
-            ortho_loss = ortho_loss * (1 - torch.eye(ortho_loss.size(-1)).to(ortho_loss.device))
-            loss += torch.abs(ortho_loss.mean())
-
-            self.log("train_loss_ortho", ortho_loss.mean(), batch_size=out.size(0), sync_dist=True)
-
-            #sample a few variable vectors from a random batch and write them to file
-            # if batch_idx % 100 == 0:
-            #     batch = torch.randint(0, 4)
-            #     #pick a random variable in this batch
-
-            #     vrs = out_vars[, ]
-
-            #VAR NORM LOSS
-            # norm_loss = 1 - (out_vars.pow(2).sum(dim=-1) + (var_hot.transpose(1, 2).unsqueeze(-1) == 0))
-            # loss += norm_loss.mean()
-
-            # self.log("train_norm_loss", norm_loss.mean(), batch_size=out.size(0), sync_dist=True)
-            self.log("train_var_norm", torch.mean((out_vars.pow(2).sum(dim=-1) + 1e-6).sqrt()))
-
-        self.log("train_loss", loss, batch_size=out.size(0), sync_dist=True, prog_bar=True) 
-
-        return loss   
-
-    def configure_optimizers(self):
-        optimizer = optim.Adam(self.parameters(), lr=1e-4)
-        return optimizer
-    
    
 class ShuffledTransformerStack(L.LightningModule):
     def __init__(self, model):
@@ -437,8 +201,8 @@ class ShuffledTransformerStack(L.LightningModule):
                 ortho_loss = out_var_mean_normed.squeeze(-2) @ out_var_mean_normed.squeeze(-2).transpose(-1, -2)
 
                 #mask diagonals out
-                ortho_loss = ortho_loss * (1 - torch.eye(ortho_loss.size(-1)).to(ortho_loss.device))
-                loss += torch.abs(ortho_loss.mean())
+                ortho_loss = torch.abs(ortho_loss) * (1 - torch.eye(ortho_loss.size(-1)).to(ortho_loss.device))
+                loss += ortho_loss.mean()
 
                 self.log("val_loss_ortho", ortho_loss.mean(), batch_size=out.size(0), sync_dist=True)
 
@@ -529,8 +293,8 @@ class ShuffledTransformerStack(L.LightningModule):
             ortho_loss = out_var_mean_normed.squeeze(-2) @ out_var_mean_normed.squeeze(-2).transpose(-1, -2)
 
             #mask diagonals out
-            ortho_loss = ortho_loss * (1 - torch.eye(ortho_loss.size(-1)).to(ortho_loss.device))
-            loss += torch.abs(ortho_loss.mean())
+            ortho_loss = torch.abs(ortho_loss) * (1 - torch.eye(ortho_loss.size(-1)).to(ortho_loss.device))
+            loss += ortho_loss.mean()
 
             self.log("train_loss_ortho", ortho_loss.mean(), batch_size=out.size(0), sync_dist=True)
 
@@ -601,6 +365,7 @@ class DiscreteTransformerStack(L.LightningModule):
                 var_hot = nn.functional.one_hot(var_index_mask_no.long(), num_classes=torch.unique(var_index_mask_no).size(0))
                 # out_vars = out.unsqueeze(1) * var_hot.transpose(1, 2).unsqueeze(-1)
                 out_vars = var_reg.unsqueeze(1) * var_hot.transpose(1, 2).unsqueeze(-1)
+                #out_vars is of B x VClasses x T x D
                 
                 # ---- VARIANCE LOSS ----           
                 out_var_mean = out_vars.mean(dim=-2, keepdim=True) #* mean_rescale # average on the tokens
@@ -639,8 +404,8 @@ class DiscreteTransformerStack(L.LightningModule):
                 ortho_loss = out_var_mean_normed.squeeze(-2) @ out_var_mean_normed.squeeze(-2).transpose(-1, -2)
 
                 #mask diagonals out
-                ortho_loss = ortho_loss * (1 - torch.eye(ortho_loss.size(-1)).to(ortho_loss.device))
-                loss += torch.abs(ortho_loss.mean())
+                ortho_loss = torch.abs(ortho_loss) * (1 - torch.eye(ortho_loss.size(-1)).to(ortho_loss.device))
+                loss += ortho_loss.mean()
 
                 self.log("val_loss_ortho", ortho_loss.mean(), batch_size=out.size(0), sync_dist=True)
 
@@ -742,8 +507,8 @@ class DiscreteTransformerStack(L.LightningModule):
             ortho_loss = out_var_mean_normed.squeeze(-2) @ out_var_mean_normed.squeeze(-2).transpose(-1, -2)
 
             #mask diagonals out
-            ortho_loss = ortho_loss * (1 - torch.eye(ortho_loss.size(-1)).to(ortho_loss.device))
-            loss += torch.abs(ortho_loss.mean())
+            ortho_loss = torch.abs(ortho_loss) * (1 - torch.eye(ortho_loss.size(-1)).to(ortho_loss.device))
+            loss += ortho_loss.mean()
 
             self.log("train_loss_ortho", ortho_loss.mean(), batch_size=out.size(0), sync_dist=True)
 
