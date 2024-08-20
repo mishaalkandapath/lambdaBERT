@@ -21,7 +21,7 @@ import copy
 
 from tokenization import TOKENIZER, BERT_MODEL 
 
-SAVE_DIR = "/home/mishaalk/scratch/"
+SAVE_DIR = "/home/mishaalk/scratch/lambdaModelsnoDiscrete/"
 
 ### Distributed Training Modules ###
 def setup(rank, world_size):
@@ -779,7 +779,9 @@ def load_model(path=None):
     return model
 
 def main(hparams=None, load_chckpnt=False, shuffled=False, discrete=False, finetune=False):
-    model = load_model(load_chckpnt)
+    
+    if load_chckpnt: model = load_model(load_chckpnt)
+    else: model = TransformerDecoderStack(4, 384, 8, 3072)
     if discrete: 
         model = DiscreteTransformerStack(model, finetune=finetune)
     else: 
@@ -792,8 +794,8 @@ def main(hparams=None, load_chckpnt=False, shuffled=False, discrete=False, finet
         save_top_k=-1,
         every_n_epochs=10,
         save_on_train_epoch_end=True)
-    trainer = L.Trainer(max_epochs=150, callbacks=[checkpointing], log_every_n_steps=1, num_sanity_val_steps=0, logger=logger, default_root_dir=SAVE_DIR+"models/")
-    train_dataloader, val_dataloader = dataloader.data_init(100 if not finetune else 150, shuffled=shuffled or discrete)
+    trainer = L.Trainer(max_epochs=200, callbacks=[checkpointing], log_every_n_steps=1, num_sanity_val_steps=0, logger=logger, default_root_dir=SAVE_DIR+"models/")
+    train_dataloader, val_dataloader = dataloader.data_init(80 if not finetune else 150, shuffled=shuffled or discrete)
     trainer.fit(model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
 
 
