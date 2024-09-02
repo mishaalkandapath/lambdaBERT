@@ -12,6 +12,7 @@ import numpy as np
 import re, copy
 
 SEP_ID=102
+BOS_ID=101
 
 #model inference
 def model_inference(model, dataloader):
@@ -239,7 +240,7 @@ class ClassifierModel(nn.Module):
         self.linear = linear
     
     def forward(self, in_embs):
-        x = torch.tensor(SEP_TOKEN).to(in_embs.device)
+        x = torch.tensor(BOS_ID).to(in_embs.device)
         out_stacked, classified_class_stacked, var_reg_stacked, newest_out = None, None, None, None
         list_out = []
         while newest_out != 102:
