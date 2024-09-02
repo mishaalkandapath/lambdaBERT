@@ -17,11 +17,11 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 
 from tqdm import tqdm
 import argparse
-import copy
+import copy, math
 
 from tokenization import TOKENIZER, BERT_MODEL 
 
-SAVE_DIR = "/home/mishaalk/scratch/lambdaModelsnoDiscrete/"
+SAVE_DIR = "/home/mishaalk/scratch/lmabdaModelNoTForce/"
 
 ### Distributed Training Modules ###
 def setup(rank, world_size):
@@ -35,6 +35,27 @@ def cleanup():
     dist.destroy_process_group()
 
 GLOBAL_BIG_FILE = open("big_vectors.txt", "a")
+
+class PositionalEncoding(nn.Module):
+
+    def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 5000):
+        super().__init__()
+        self.dropout = nn.Dropout(p=dropout)
+
+        position = torch.arange(max_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
+        pe = torch.zeros(max_len, 1, d_model)
+        pe[:, 0, 0::2] = torch.sin(position * div_term)
+        pe[:, 0, 1::2] = torch.cos(position * div_term)
+        self.register_buffer('pe', pe)
+
+    def forward(self, x):
+        """
+        Arguments:
+            x: Tensor, shape ``[seq_len, batch_size, embedding_dim]``
+        """
+        x = x + self.pe[:x.size(0)]
+        return self.dropout(x)
 
 
 ### Model Definition ###
@@ -73,9 +94,10 @@ class TransformerDecoderStack(nn.Module):
             self.reg_forward2 = nn.Linear(d_model, 10)
             self.reg_act = nn.ReLU()
 
-            self.decoders = nn.ModuleList([nn.TransformerDecoderLayer(d_model, num_heads, dropout=dropout, batch_first=True)
+            self.decoders = nn.ModuleList([nn.TransformerDecoderLayer(d_model, num_heads, dropout=dropout, batch_first=True, norm_first=True)
                                             for _ in range(self.num_layers)])
-            # self.var_decoder = nn.TransformerDecoderLayer(d_model, num_heads, dropout=dropout, batch_first=True)
+            
+            self.pe_embed = PositionalEncoding(self.d_model)
             
             self.layers_in_a_gpu = self.num_layers
 
@@ -89,8 +111,8 @@ class TransformerDecoderStack(nn.Module):
             outputs = outputs.to(getattr(self, f"device_{0}"))
             emb = emb.to(getattr(self, f"device_{0}"))
 
-        outputs = self.initial_forward(outputs)
-        emb = self.initial_forward(emb)
+        outputs = self.pe_embed(self.initial_forward(outputs))
+        emb = self.pe_embed(self.initial_forward(emb))
         #mask the sequence for autorregressive
         tgt_mask = torch.nn.Transformer.generate_square_subsequent_mask(seq.size(1)).to(emb.device)
 
@@ -125,9 +147,11 @@ class TransformerDecoderStack(nn.Module):
         return outputs, classified_class, var_emb
    
 class ShuffledTransformerStack(L.LightningModule):
-    def __init__(self, model):
+    def __init__(self, model, t_force=True, t_damp=0.95):
         super().__init__()
         self.model = model
+        self.t_force = t_force
+        self.t_damp = t_damp if self.t_force else 1
         #pick a random bunch of parameters:
         # self.reference_param = None
         # self.fin_reference = None
@@ -148,129 +172,42 @@ class ShuffledTransformerStack(L.LightningModule):
             #offset the masks by one 
             lambda_index_mask, app_index_mask, var_index_mask_no, pad_mask = (lambda_index_mask[:, 1:], app_index_mask[:, 1:], var_index_mask_no[:, 1:], pad_mask[:, 1:])
 
-            loss = criterion(out[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | app_index_mask | pad_mask)],
-                            target[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | app_index_mask | pad_mask)])
-            
-            self.log("val_loss_tokens", loss, batch_size=out.size(0), sync_dist=True)
-            if out[lambda_index_mask].reshape(-1, out.size(-1)).shape[0] != 0:
-                gt_cls_mask = var_index_mask_no.type(torch.bool) + 2*lambda_index_mask.type(torch.bool) + 3*app_index_mask.type(torch.bool)
-                classifier_loss = class_criterion(classified_class.view(-1, 4), gt_cls_mask.view(-1))
-                loss += classifier_loss
+            return self.common_loss([criterion, class_criterion], [out, classified_class, var_reg], target,
+                               lambda_index_mask, app_index_mask, var_index_mask_no, pad_mask, split="valid")
 
-                self.log("val_loss_classifier", classifier_loss, batch_size=out.size(0), sync_dist=True)
-
-                #loss on variables: compute the variance on the variables
-                var_hot = nn.functional.one_hot(var_index_mask_no.long(), num_classes=torch.unique(var_index_mask_no).size(0))
-                # out_vars = out.unsqueeze(1) * var_hot.transpose(1, 2).unsqueeze(-1)
-                out_vars = var_reg.unsqueeze(1) * var_hot.transpose(1, 2).unsqueeze(-1)
-                
-                # ---- VARIANCE LOSS ----           
-                out_var_mean = out_vars.mean(dim=-2, keepdim=True) #* mean_rescale # average on the tokens
-                # print(torch.sum(out_var_mean * var_hot.transpose(1, 2).unsqueeze(-1)))
-                out_var_difference = out_vars - (out_var_mean * var_hot.transpose(1, 2).unsqueeze(-1))
-                # print(out_var_difference.sum())
-                var_loss = torch.mean(out_var_difference**2, dim=-2, keepdim=True) #* mean_rescale
-                # print(var_loss.sum())
-                # var_loss = torch.sqrt(var_loss)
-                var_loss = torch.mean(torch.sum(var_loss.sum(dim=-1).squeeze(-1), dim=-1))
-                # print(var_loss.sum())
-                loss += var_loss
-
-                self.log("val_loss_variance", var_loss, batch_size=out.size(0), sync_dist=True)
-
-                # --- COS SIM LOSS ----
-                out_vars_normed = (out_vars.pow(2).sum(dim=-1) + 1e-6).sqrt()
-                out_vars_normed = out_vars / out_vars_normed.unsqueeze(-1)
-                out_vars_sim = out_vars_normed @ out_vars_normed.transpose(-1, -2) # similarity within classes, everything else is 0
-                out_vars_sim_mask = var_hot.transpose(1, 2).unsqueeze(-1).to(dtype=torch.float32) @ var_hot.transpose(1, 2).unsqueeze(-2).to(dtype=torch.float32)
-                var_loss = 1 - (out_vars_sim + (out_vars_sim_mask == 0))
-                loss += var_loss.mean()
-
-                self.log("val_loss_vars", var_loss.mean(), batch_size=out.size(0), sync_dist=True)
-
-                # ---- Othogonality loss for Variance Loss
-                # ortho_loss = out_var_mean.squeeze(-2) @ out_var_mean.squeeze(-2).transpose(1, 2)
-                # #mask diagonals out
-                # ortho_loss = ortho_loss * (1 - torch.eye(ortho_loss.size(-1)).to(ortho_loss.device))
-                # loss += ortho_loss.mean()
-
-                # --- Ortho loss for sim loss
-                out_var_mean_normed = out_vars_normed.mean(dim=-2, keepdim=True)
-
-                # Common component for ortho loss
-                ortho_loss = out_var_mean_normed.squeeze(-2) @ out_var_mean_normed.squeeze(-2).transpose(-1, -2)
-
-                #mask diagonals out
-                ortho_loss = torch.abs(ortho_loss) * (1 - torch.eye(ortho_loss.size(-1)).to(ortho_loss.device))
-                loss += ortho_loss.mean()
-
-                self.log("val_loss_ortho", ortho_loss.mean(), batch_size=out.size(0), sync_dist=True)
-
-                #VAR NORM LOSS
-                # norm_loss = 1 - (out_vars.pow(2).sum(dim=-1) + (var_hot.transpose(1, 2).unsqueeze(-1) == 0))
-                # loss += norm_loss.mean()
-
-                # self.log("val_norm_loss", norm_loss.mean(), batch_size=out.size(0), sync_dist=True)
-
-        self.log("val_loss", loss.mean(), batch_size=out.size(0), sync_dist=True, prog_bar=True) 
-
-        return loss
-
-    def training_step(self, batch, batch_idx):
-        criterion = nn.MSELoss()
-
-        class_criterion = nn.CrossEntropyLoss()
-        (in_embs, target_embs, _, var_index_mask_no, lambda_index_mask, app_index_mask, pad_mask) = batch
+    def common_loss(self, criteria, out, target, lambda_index_mask, app_index_mask, var_index_mask_no, pad_mask, split="train"):
+        criterion, class_criterion = criteria
         
-        out, classified_class, var_reg = self.model(target_embs[:, :-1, :], in_embs)
-        target = target_embs[:, 1:, :]
-
-        #no mse for the pads, variables, lambda or anything else. jus tthe actual embeddings
-        #offset the masks by one 
-        lambda_index_mask, app_index_mask, var_index_mask_no, pad_mask = (lambda_index_mask[:, 1:], app_index_mask[:, 1:], var_index_mask_no[:, 1:], pad_mask[:, 1:])
+        out, classified_class, var_reg = out
 
         assert len(torch.unique(lambda_index_mask + var_index_mask_no.type(torch.bool) + app_index_mask + pad_mask)) == 2, torch.unique(lambda_index_mask + var_index_mask_no.type(torch.bool) + app_index_mask + pad_mask)
         loss = criterion(out[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | app_index_mask | pad_mask)],
                         target[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | app_index_mask | pad_mask)])
         
 
-        self.log("train_loss_tokens", loss, batch_size=out.size(0), sync_dist=True) 
+        self.log(f"{split}_loss_tokens", loss, batch_size=out.size(0), sync_dist=True) 
         
         #mse on lambdas
         if out[lambda_index_mask].reshape(-1, out.size(-1)).shape[0] != 0:
-            # lambda_loss = criterion(out[lambda_index_mask].reshape(-1, out.size(-1)), target[lambda_index_mask].reshape(-1, out.size(-1))) # has to be consisten across batches
-
-            ##inconsisten version:
-            # lambda_loss = criterion(out[lambda_index_mask].reshape(-1, out.size(-1))[0:1, :].repeat(repeat_times, 1), out[lambda_index_mask].reshape(-1, out.size(-1))[1:, :])
-            # loss += lambda_loss.mean()
-
-            # self.log("train_loss_lambdas", lambda_loss, batch_size=out.size(0), sync_dist=True) 
             gt_cls_mask = var_index_mask_no.type(torch.bool) + 2*lambda_index_mask.type(torch.bool) + 3*app_index_mask.type(torch.bool) #because lambda's class is 2
             classifier_loss = class_criterion(classified_class.view(-1, 4), gt_cls_mask.view(-1))
             loss += classifier_loss
 
-            self.log("train_loss_classifier", classifier_loss, batch_size=out.size(0), sync_dist=True)
+            self.log(f"{split}_loss_classifier", classifier_loss, batch_size=out.size(0), sync_dist=True)
 
             #loss on variables: compute the variance on the variables
             var_hot = nn.functional.one_hot(var_index_mask_no.long(), num_classes=torch.unique(var_index_mask_no).size(0))
-            # out_vars = out.unsqueeze(1) * var_hot.transpose(1, 2).unsqueeze(-1) -- FOR PREVIOUS
             var_hot = var_hot.to(dtype=torch.bool)
             out_vars = var_reg.unsqueeze(1) * var_hot.transpose(1, 2).unsqueeze(-1)
            
             # ---- VARIANCE LOSS ----           
-            # mean_rescale = (out_vars.shape[-2]/torch.count_nonzero(out_vars.sum(dim=-1, keepdim=True), dim=-2)).unsqueeze(-1).detach()
             out_var_mean = out_vars.mean(dim=-2, keepdim=True) #* mean_rescale # average on the tokens
-            # print(torch.sum(out_var_mean * var_hot.transpose(1, 2).unsqueeze(-1)))
             out_var_difference = out_vars - (out_var_mean * var_hot.transpose(1, 2).unsqueeze(-1))
-            # print(out_var_difference.sum())
             var_loss = torch.mean(out_var_difference**2, dim=-2, keepdim=True) #* mean_rescale
-            # print(var_loss.sum())
-            # var_loss = torch.sqrt(var_loss)
             var_loss = torch.mean(torch.sum(var_loss.sum(dim=-1).squeeze(-1), dim=-1))
-            # print(var_loss.sum())
             loss += var_loss
 
-            self.log("train_loss_variance", var_loss, batch_size=out.size(0), sync_dist=True)
+            self.log(f"{split}_loss_variance", var_loss, batch_size=out.size(0), sync_dist=True)
 
             # --- COS SIM LOSS ----
             out_vars_normed = (out_vars.pow(2).sum(dim=-1) + 1e-6).sqrt()
@@ -280,11 +217,7 @@ class ShuffledTransformerStack(L.LightningModule):
             var_loss = 1 - (out_vars_sim + (out_vars_sim_mask == 0))
             loss += var_loss.mean()
 
-            self.log("train_loss_vars", var_loss.mean(), batch_size=out.size(0), sync_dist=True)
-            
-            # ---- Othogonality loss for Variance Loss
-            # out_var_mean_normed = torch.sum((out_var_mean ** 2), dim=-1, keepdim=True) + 1e-6
-            # out_var_mean_normed = out_var_mean / out_var_mean_normed
+            self.log(f"{split}_loss_vars", var_loss.mean(), batch_size=out.size(0), sync_dist=True)
 
             # --- Ortho loss for sim loss
             out_var_mean_normed = out_vars_normed.mean(dim=-2, keepdim=True)
@@ -296,28 +229,47 @@ class ShuffledTransformerStack(L.LightningModule):
             ortho_loss = torch.abs(ortho_loss) * (1 - torch.eye(ortho_loss.size(-1)).to(ortho_loss.device))
             loss += ortho_loss.mean()
 
-            self.log("train_loss_ortho", ortho_loss.mean(), batch_size=out.size(0), sync_dist=True)
+            self.log(f"{split}_loss_ortho", ortho_loss.mean(), batch_size=out.size(0), sync_dist=True)
 
-            #sample a few variable vectors from a random batch and write them to file
-            # if batch_idx % 100 == 0:
-            #     batch = torch.randint(0, 4)
-            #     #pick a random variable in this batch
+            self.log(f"{split}_var_norm", torch.mean((out_vars.pow(2).sum(dim=-1) + 1e-6).sqrt()), sync_dist=True)
 
-            #     vrs = out_vars[, ]
-
-            #VAR NORM LOSS
-            # norm_loss = 1 - (out_vars.pow(2).sum(dim=-1) + (var_hot.transpose(1, 2).unsqueeze(-1) == 0))
-            # loss += norm_loss.mean()
-
-            # self.log("train_norm_loss", norm_loss.mean(), batch_size=out.size(0), sync_dist=True)
-            self.log("train_var_norm", torch.mean((out_vars.pow(2).sum(dim=-1) + 1e-6).sqrt()))
-
-        self.log("train_loss", loss, batch_size=out.size(0), sync_dist=True, prog_bar=True) 
+        self.log(f"{split}_loss", loss, batch_size=out.size(0), sync_dist=True, prog_bar=True) 
 
         return loss   
 
+    def training_step(self, batch, batch_idx):
+        criterion = nn.MSELoss()
+
+        class_criterion = nn.CrossEntropyLoss()
+        (in_embs, target_embs, _, var_index_mask_no, lambda_index_mask, app_index_mask, pad_mask) = batch
+        
+        out = target_embs[:, :-1, :]
+        target = target_embs[:, 1:, :]
+
+        #positional embeddings
+
+        out, classified_class, var_reg = self.model(out, in_embs)
+
+        #no mse for the pads, variables, lambda or anything else. jus tthe actual embeddings
+        #offset the masks by one 
+        lambda_index_mask, app_index_mask, var_index_mask_no, pad_mask = (lambda_index_mask[:, 1:], app_index_mask[:, 1:], var_index_mask_no[:, 1:], pad_mask[:, 1:])
+        loss = self.common_loss([criterion, class_criterion], [out, classified_class, var_reg], target,
+                               lambda_index_mask, app_index_mask, var_index_mask_no, pad_mask, split="train")
+
+        # roll out
+        out, target = out[:, :-1, :], target[:, 1:, :]
+        while (self.t_force and target.size(1) > 2 and (target_embs.size(1) - target.size(1)) <= 10):
+            out, classified_class, var_reg = self.model(out, in_embs)
+            lambda_index_mask, app_index_mask, var_index_mask_no, pad_mask = (lambda_index_mask[:, 1:], app_index_mask[:, 1:], var_index_mask_no[:, 1:], pad_mask[:, 1:])
+            loss += (self.t_damp ** (target_embs.size(1) - target.size(1))) * self.common_loss([criterion, class_criterion], [out, classified_class, var_reg], target,
+                               lambda_index_mask, app_index_mask, var_index_mask_no, pad_mask, split="train")
+            out = out[:, :-1, :]
+            target = target[:, 1:, :]
+
+        return loss
+        
     def configure_optimizers(self):
-        optimizer = optim.Adam(self.parameters(), lr=1e-4)
+        optimizer = optim.AdamW(self.parameters(), lr=1e-5)
         return optimizer
     
 class DiscreteTransformerStack(L.LightningModule):
@@ -325,8 +277,11 @@ class DiscreteTransformerStack(L.LightningModule):
         super().__init__()
         self.model = model
         self.model.requires_grad_(False)
-        self.linear = nn.Sequential(nn.Linear(768, 768), nn.ReLU(), nn.Linear(768, TOKENIZER.vocab_size))
-        self.finetune= finetune
+        self.logit_linear = nn.Linear(768, TOKENIZER.vocab_size, bias=False)
+        self.b = nn.Parameter(torch.zeros(TOKENIZER.vocab_size))
+        self.logit_linear.bias = self.b 
+        self.linear = nn.Sequential(nn.Linear(768, 768), nn.GELU(), nn.LayerNorm(768, 1e-12), self.logit_linear)
+        self.finetune = finetune
         
     def validation_step(self, batch, batch_idx):
         criterion = nn.MSELoss()
@@ -532,7 +487,7 @@ class DiscreteTransformerStack(L.LightningModule):
         return loss   
 
     def configure_optimizers(self):
-        optimizer = optim.Adam(self.parameters(), lr=1e-4)
+        optimizer = optim.AdamW(self.parameters(), lr=1e-4)
         return optimizer
     
 def load_model(path=None):
@@ -543,7 +498,7 @@ def load_model(path=None):
         model.load_state_dict(model_weights)
     return model
 
-def main(hparams=None, load_chckpnt=False, shuffled=False, discrete=False, finetune=False):
+def main(hparams=None, load_chckpnt=False, shuffled=False, discrete=False, finetune=False, **kwargs):
     
     if load_chckpnt: model = load_model(load_chckpnt)
     else: model = TransformerDecoderStack(4, 384, 8, 3072)
@@ -551,16 +506,16 @@ def main(hparams=None, load_chckpnt=False, shuffled=False, discrete=False, finet
         model = DiscreteTransformerStack(model, finetune=finetune)
     else: 
         wrapper = ShuffledTransformerStack#LitTransformerStack if not shuffled else ShuffledTransformerStack
-        model = wrapper(model)
+        model = wrapper(model, t_force = kwargs["t_force"], t_damp=kwargs["t_damp"])
 
     logger = WandbLogger(log_model="all", project="lambdaBERT", entity="mishaalkandapath") #CSVLogger(SAVE_DIR+"logs_after_5/")
     checkpointing = L.pytorch.callbacks.ModelCheckpoint(dirpath=SAVE_DIR,
         filename='constrative_{epoch}',
         save_top_k=-1,
-        every_n_epochs=10,
+        every_n_epochs=4,
         save_on_train_epoch_end=True)
     trainer = L.Trainer(max_epochs=200, callbacks=[checkpointing], log_every_n_steps=1, num_sanity_val_steps=0, logger=logger, default_root_dir=SAVE_DIR+"models/")
-    train_dataloader, val_dataloader = dataloader.data_init(80 if not finetune else 150, shuffled=shuffled or discrete)
+    train_dataloader, val_dataloader = dataloader.data_init(kwargs["batch_size"], shuffled=shuffled or discrete)
     trainer.fit(model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
 
 
@@ -578,9 +533,15 @@ if __name__ == "__main__":
     parser.add_argument("--discrete", action="store_true")
     parser.add_argument("--finetune_discrete", action="store_true")
     parser.add_argument("--model_path", default=False)
+    parser.add_argument("--t_damp", default=0.95, type=float)
+    parser.add_argument("--t_force", action="store_true")
+    parser.add_argument("--save_dir", default=SAVE_DIR)
+    parser.add_argument("--batch_size", default=50, type=int)
+
 
     args = parser.parse_args()
-    main(load_chckpnt=args.model_path, shuffled=args.shuffled_mode, discrete=args.discrete, finetune=args.finetune_discrete)
+    SAVE_DIR = args.save_dir
+    main(load_chckpnt=args.model_path, shuffled=args.shuffled_mode, discrete=args.discrete, finetune=args.finetune_discrete, t_force=args.t_force, t_damp=args.t_damp, batch_size=args.batch_size)
 
 
     # model = TransformerDecoderStack(6, 384, 12, 3072)
