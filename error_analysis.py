@@ -292,23 +292,23 @@ if __name__ == "__main__":
     plot_confusion_matrix(confusion_matrix)
 
     # --DISCRETE OUTPUT SAMPLES
-    lines = pd.read_csv("data/input_sentences.csv", header=None)
-    out_file = open("data/output_samples.csv", "w")
-    out_file_csv = csv.writer(out_file)
+    # lines = pd.read_csv("data/input_sentences.csv", header=None)
+    # out_file = open("data/output_samples.csv", "w")
+    # out_file_csv = csv.writer(out_file)
 
-    rand_lines = random.choices(range(len(lines)), k=10)
-    write_lines = []
-    for rand_line in rand_lines:
-        line = eval(lines.iloc[rand_line, 1])
-        words = " ".join(line).replace("...}"," ...}").replace("{..","{. .").replace("NP.","NP .").replace("NP—","NP —").replace(",}"," ,}").\
-    replace("'re"," 're").replace("'s"," 's").replace("'ve}"," 've}").replace("!}"," !}").replace("?}"," ?}").replace("n't"," n't").\
-    replace("'m}"," 'm}").replace("{. ..","{...").replace("{——}","{— —}").replace("{--—}","{- -—}").replace("St.", "St").split()
+    # rand_lines = random.choices(range(len(lines)), k=10)
+    # write_lines = []
+    # for rand_line in rand_lines:
+    #     line = eval(lines.iloc[rand_line, 1])
+    #     words = " ".join(line).replace("...}"," ...}").replace("{..","{. .").replace("NP.","NP .").replace("NP—","NP —").replace(",}"," ,}").\
+    # replace("'re"," 're").replace("'s"," 's").replace("'ve}"," 've}").replace("!}"," !}").replace("?}"," ?}").replace("n't"," n't").\
+    # replace("'m}"," 'm}").replace("{. ..","{...").replace("{——}","{— —}").replace("{--—}","{- -—}").replace("St.", "St").split()
         
-        words = [word[:-1] for i, word in enumerate(words) if i % 2 != 0]
-        words = " ".join(words)
+    #     words = [word[:-1] for i, word in enumerate(words) if i % 2 != 0]
+    #     words = " ".join(words)
 
-        write_lines.append([rand_line, get_discrete_output(words, model)])
-    out_file.writelines(write_lines)
+    #     write_lines.append([rand_line, get_discrete_output(words, model)])
+    # out_file.writelines(write_lines)
 
 
 
