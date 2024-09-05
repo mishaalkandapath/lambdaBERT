@@ -498,14 +498,14 @@ def load_model(path=None):
         model.load_state_dict(model_weights)
     return model
 
-def main(hparams=None, load_chckpnt=False, shuffled=False, discrete=False, finetune=False, **kwargs):
+def main(hparams=None, load_chckpnt=False, discrete=False, finetune=False, **kwargs):
     
     if load_chckpnt: model = load_model(load_chckpnt)
     else: model = TransformerDecoderStack(4, 384, 8, 3072)
     if discrete: 
         model = DiscreteTransformerStack(model, finetune=finetune)
     else: 
-        wrapper = ShuffledTransformerStack#LitTransformerStack if not shuffled else ShuffledTransformerStack
+        wrapper = ShuffledTransformerStack
         model = wrapper(model, t_force = kwargs["t_force"], t_damp=kwargs["t_damp"])
 
     logger = WandbLogger(log_model="all", project="lambdaBERT", entity="mishaalkandapath") #CSVLogger(SAVE_DIR+"logs_after_5/")
@@ -515,7 +515,7 @@ def main(hparams=None, load_chckpnt=False, shuffled=False, discrete=False, finet
         every_n_epochs=4,
         save_on_train_epoch_end=True)
     trainer = L.Trainer(max_epochs=200, callbacks=[checkpointing], log_every_n_steps=1, num_sanity_val_steps=0, logger=logger, default_root_dir=SAVE_DIR+"models/")
-    train_dataloader, val_dataloader = dataloader.data_init(kwargs["batch_size"], shuffled=shuffled or discrete)
+    train_dataloader, val_dataloader = dataloader.data_init(kwargs["batch_size"])
     trainer.fit(model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
 
 
@@ -529,7 +529,6 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--d_model", type=int, default=384, help="Model Dimension")
-    parser.add_argument("--shuffled_mode", action="store_true")
     parser.add_argument("--discrete", action="store_true")
     parser.add_argument("--finetune_discrete", action="store_true")
     parser.add_argument("--model_path", default=False)
@@ -541,7 +540,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     SAVE_DIR = args.save_dir
-    main(load_chckpnt=args.model_path, shuffled=args.shuffled_mode, discrete=args.discrete, finetune=args.finetune_discrete, t_force=args.t_force, t_damp=args.t_damp, batch_size=args.batch_size)
+    main(load_chckpnt=args.model_path, discrete=args.discrete, finetune=args.finetune_discrete, t_force=args.t_force, t_damp=args.t_damp, batch_size=args.batch_size)
 
 
     # model = TransformerDecoderStack(6, 384, 12, 3072)
