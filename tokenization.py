@@ -4,9 +4,9 @@ import re
 from collections import defaultdict
 import random
 
-TOKENIZER = BertTokenizerFast.from_pretrained ("bert-base-uncased")
+TOKENIZER = BertTokenizerFast.from_pretrained ("bert-base-multilingual-cased")
 
-BERT_MODEL = BertModel.from_pretrained("bert-base-uncased", output_hidden_states=True)
+BERT_MODEL = BertModel.from_pretrained("bert-base-multilingual-cased", output_hidden_states=True)
 
 # BIG_VAR_EMBS = -torch.ones((2000, 768)) * (torch.tensor(range(1, 2001)))[:, None]
 

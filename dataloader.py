@@ -406,30 +406,23 @@ class ShuffledLambdaTermsDataset(Dataset):
 def shuffled_collate(batch):
     sent_embedding, lambda_term_embedding, lambda_term_tokens, lambda_mask, var_mask, app_mask = zip(*batch)
     
-    sent_embedding, lambda_term_embedding, lambda_term_tokens, lambda_mask, var_mask, app_mask = [sent.squeeze(0) for sent in sent_embedding], [lambda_term.squeeze(0) for lambda_term in lambda_term_embedding], [torch.tensor(sent, dtype=torch.float32) for sent in lambda_term_tokens],[torch.tensor(sent, dtype=torch.bool).squeeze(0) for sent in lambda_mask], [torch.tensor(var, dtype=torch.bool).squeeze(0) for var in var_mask], [torch.tensor(app, dtype=torch.bool).squeeze(0) for app in app_mask]
-
-    sent_embedding_batched = pad_sequence(sent_embedding, batch_first=True, padding_value = 0)
-    try:
-        lambda_term_embedding_batched = pad_sequence(lambda_term_embedding, batch_first=True, padding_value = 15)
-        lambda_term_tokens_batched = pad_sequence(lambda_term_tokens, batch_first=True, padding_value = 0)
-    except:
-        print([lambda_term.shape for lambda_term in lambda_term_embedding])
-        raise Exception
+    sent_embedding, lambda_term_embedding, lambda_term_tokens, lambda_mask, var_mask, app_mask = [sent.squeeze(0) for sent in sent_embedding], [lambda_term.squeeze(0) for lambda_term in lambda_term_embedding], [torch.tensor(sent, dtype=torch.int64) for sent in lambda_term_tokens],[torch.tensor(sent, dtype=torch.bool).squeeze(0) for sent in lambda_mask], [torch.tensor(var, dtype=torch.bool).squeeze(0) for var in var_mask], [torch.tensor(app, dtype=torch.bool).squeeze(0) for app in app_mask]
+    sent_embedding_batched = pad_sequence(sent_embedding, batch_first=True, padding_value = 15)
+    
+    lambda_term_embedding_batched = pad_sequence(lambda_term_embedding, batch_first=True, padding_value = 15)
+    lambda_term_tokens_batched = pad_sequence(lambda_term_tokens, batch_first=True, padding_value = 0)
     var_mask_batched = pad_sequence(var_mask, batch_first=True, padding_value = 0)
     lambda_mask_batched = pad_sequence(lambda_mask, batch_first=True, padding_value = 0)
     app_mask_batched = pad_sequence(app_mask, batch_first=True, padding_value = 0)
 
     lambda_pad_mask = lambda_term_embedding_batched == 15
     lambda_term_embedding_batched = lambda_term_embedding_batched.masked_fill(lambda_pad_mask, 0)
-
-    #extend the masks
-    # lambda_mask_batched = lambda_mask_batched.unsqueeze(-1).expand(-1, -1, lambda_term_embedding_batched.size(-1))
-    # var_mask_batched = var_mask_batched.unsqueeze(-1).expand(-1, -1, lambda_term_embedding_batched.size(-1))
-    # app_mask_batched = app_mask_batched.unsqueeze(-1).expand(-1, -1, lambda_term_embedding_batched.size(-1))
-    #contract the mask
     lambda_pad_mask = lambda_pad_mask.sum(-1) >= 1
 
-    return sent_embedding_batched, lambda_term_embedding_batched, lambda_term_tokens_batched, var_mask_batched, lambda_mask_batched, app_mask_batched, lambda_pad_mask
+    sent_pad_mask = sent_embedding_batched == 15
+    sent_embedding_batched = sent_embedding_batched.masked_fill(sent_pad_mask, 0)
+    # sent_pad_mask = sent_embedding_batched.sum(-1) >= 1
+    return sent_embedding_batched, lambda_term_embedding_batched, lambda_term_tokens_batched, var_mask_batched, lambda_mask_batched, app_mask_batched, lambda_pad_mask, sent_pad_mask
 
 
 def data_init(batch_size, mode=0, shuffled=False):
