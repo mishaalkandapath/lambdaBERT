@@ -937,42 +937,14 @@ SEP_TOKEN_MULTILINGUAL = [[[ 1.3052e+00, -8.8454e-01,  3.9420e+00,  2.9212e+00, 
          2.0106e+00, -1.2382e-01,  4.3564e+00, -2.5311e-01, -2.0908e+00,
         -4.8612e+00,  1.5140e+00, -1.6781e-02, -6.7198e-01,  1.0206e+00,
          2.0673e-02,  4.3746e+00,  1.7054e+00]]]
-
-class LambdaTermsDataset(Dataset):
-    def __init__(self, input_sentences_file, main_dir, transform=None, target_transform=None):
-        self.main_dir = main_dir
-        self.input_sentences = pd.read_csv(input_sentences_file)
-        self.transform = transform
-        self.target_transform = target_transform
-    
-    def __len__(self):
-        return len(self.input_sentences)
-
-    def __getitem__(self, index):
-        sentence = self.input_sentences.iloc[index, 0]
-        if sentence[0] == '""': sentence = sentence[1]
-        if sentence[-1] == '""': sentence = sentence[:-1]
-        path = self.input_sentences.iloc[index, 2]
-        path = DATA_PATH + path[len("lambdaBERT/data/"):]
-        with open(path, 'r') as f:
-            lambda_terms = f.readlines()[0].strip()
-
-        # remove the ")" from the lambda_term:
-        lambda_terms = lambda_terms.replace(")", "")
-
-        if self.transform:
-            sentence = self.transform(sentence)
-        if self.target_transform:
-            lambda_terms = self.target_transform(lambda_terms)
-        
-        return sentence, lambda_terms
     
 class ShuffledLambdaTermsDataset(Dataset):
-    def __init__(self, input_sentences_file, main_dir, transform=None, target_transform=None):
+    def __init__(self, input_sentences_file, main_dir, transform=None, target_transform=None, last=False):
         self.main_dir = main_dir
         self.input_sentences = pd.read_csv(input_sentences_file)
         self.transform = transform
         self.target_transform = target_transform
+        self.last = last
     
     def __len__(self):
         return len(self.input_sentences)
@@ -1016,12 +988,12 @@ class ShuffledLambdaTermsDataset(Dataset):
         var_index_mask_no = [0] + var_index_mask_no + [0]
         app_index_mask = [0] + app_index_mask + [0]
         
-        return sent_embs, target_embs, target_tokens, lambda_index_mask, var_index_mask_no, app_index_mask
+        return sent_embs, target_embs if not self.last else target_emb_last, target_tokens, lambda_index_mask, var_index_mask_no, app_index_mask
 
 def shuffled_collate(batch):
-    sent_embedding, lambda_term_embedding, lambda_term_embedding_last, lambda_term_tokens, lambda_mask, var_mask, app_mask = zip(*batch)
+    sent_embedding, lambda_term_embedding, lambda_term_tokens, lambda_mask, var_mask, app_mask = zip(*batch)
     
-    sent_embedding, lambda_term_embedding, lambda_term_embedding_last, lambda_term_tokens, lambda_mask, var_mask, app_mask = [sent.squeeze(0) for sent in sent_embedding], [lambda_term.squeeze(0) for lambda_term in lambda_term_embedding], [lambda_term.squeeze(0) for lambda_term in lambda_term_embedding_last], [torch.tensor(sent, dtype=torch.float32) for sent in lambda_term_tokens],[torch.tensor(sent, dtype=torch.bool).squeeze(0) for sent in lambda_mask], [torch.tensor(var, dtype=torch.bool).squeeze(0) for var in var_mask], [torch.tensor(app, dtype=torch.bool).squeeze(0) for app in app_mask]
+    sent_embedding, lambda_term_embedding, lambda_term_tokens, lambda_mask, var_mask, app_mask = [sent.squeeze(0) for sent in sent_embedding], [lambda_term.squeeze(0) for lambda_term in lambda_term_embedding], [torch.tensor(sent, dtype=torch.float32) for sent in lambda_term_tokens],[torch.tensor(sent, dtype=torch.bool).squeeze(0) for sent in lambda_mask], [torch.tensor(var, dtype=torch.bool).squeeze(0) for var in var_mask], [torch.tensor(app, dtype=torch.bool).squeeze(0) for app in app_mask]
 
     sent_embedding_batched = pad_sequence(sent_embedding, batch_first=True, padding_value = 0)
     try:
@@ -1030,7 +1002,6 @@ def shuffled_collate(batch):
     except:
         print([lambda_term.shape for lambda_term in lambda_term_embedding])
         raise Exception
-    lambda_term_embedding_last_batched = pad_sequence(lambda_term_embedding_last, batch_first=True, padding_value = 0)
     var_mask_batched = pad_sequence(var_mask, batch_first=True, padding_value = 0)
     lambda_mask_batched = pad_sequence(lambda_mask, batch_first=True, padding_value = 0)
     app_mask_batched = pad_sequence(app_mask, batch_first=True, padding_value = 0)
@@ -1045,14 +1016,14 @@ def shuffled_collate(batch):
     #contract the mask
     lambda_pad_mask = lambda_pad_mask.sum(-1) >= 1
 
-    return sent_embedding_batched, lambda_term_embedding_batched, lambda_term_embedding_last_batched,lambda_term_tokens_batched, var_mask_batched, lambda_mask_batched, app_mask_batched, lambda_pad_mask
+    return sent_embedding_batched, lambda_term_embedding_batched, lambda_term_tokens_batched, var_mask_batched, lambda_mask_batched, app_mask_batched, lambda_pad_mask
 
 
-def data_init(batch_size, mode=0):
+def data_init(batch_size, mode=0, last=False):
     
     #load in the tokenizer
     # tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
-    dataset = ShuffledLambdaTermsDataset(DATA_PATH + 'input_sentences.csv', DATA_PATH + 'lambda_terms/')
+    dataset = ShuffledLambdaTermsDataset(DATA_PATH + 'input_sentences.csv', DATA_PATH + 'lambda_terms/', last=last)
     #split the datset 70 20 10 split
     train_size = int(0.7 * len(dataset))
     val_size = int(0.2 * len(dataset))

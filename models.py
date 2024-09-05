@@ -515,7 +515,7 @@ def main(hparams=None, load_chckpnt=False, discrete=False, finetune=False, **kwa
         every_n_epochs=4,
         save_on_train_epoch_end=True)
     trainer = L.Trainer(max_epochs=200, callbacks=[checkpointing], log_every_n_steps=1, num_sanity_val_steps=0, logger=logger, default_root_dir=SAVE_DIR+"models/")
-    train_dataloader, val_dataloader = dataloader.data_init(kwargs["batch_size"])
+    train_dataloader, val_dataloader = dataloader.data_init(kwargs["batch_size"], last=kwargs["bert_is_last"])
     trainer.fit(model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
 
 
@@ -536,11 +536,12 @@ if __name__ == "__main__":
     parser.add_argument("--t_force", action="store_true")
     parser.add_argument("--save_dir", default=SAVE_DIR)
     parser.add_argument("--batch_size", default=50, type=int)
+    parsear.add_argument("--bert_is_last", action="store_true")
 
 
     args = parser.parse_args()
     SAVE_DIR = args.save_dir
-    main(load_chckpnt=args.model_path, discrete=args.discrete, finetune=args.finetune_discrete, t_force=args.t_force, t_damp=args.t_damp, batch_size=args.batch_size)
+    main(load_chckpnt=args.model_path, discrete=args.discrete, finetune=args.finetune_discrete, t_force=args.t_force, t_damp=args.t_damp, batch_size=args.batch_size, bert_is_last=args.bert_is_last)
 
 
     # model = TransformerDecoderStack(6, 384, 12, 3072)
