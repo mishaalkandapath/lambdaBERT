@@ -1256,10 +1256,10 @@ if __name__ == "__main__":
         lambda_terms = lambda_terms.replace(")", "")
         sent_emb, target_emb, target_emb_last, target_tokens, var_mask, lambda_mask, app_mask = create_out_tensor(gen_sent, lambda_terms)
 
-        if os.path.exists(f"/w/150/lambda_squad/{df.iloc[i, 2][:-4]}.pt"): 
-            #delete it
-            os.remove(f"/w/150/lambda_squad/{df.iloc[i, 2][:-4]}.pt")
-        torch.save((sent_emb, target_emb, target_emb_last, target_tokens, var_mask, lambda_mask, app_mask), f"/w/150/lambda_squad/{df.iloc[i, 2][:-4]}.pt")
+        # if os.path.exists(f"/w/150/lambda_squad/{df.iloc[i, 2][:-4]}.pt"): 
+        #     #delete it
+        #     os.remove(f"/w/150/lambda_squad/{df.iloc[i, 2][:-4]}.pt")
+        # torch.save((sent_emb, target_emb, target_emb_last, target_tokens, var_mask, lambda_mask, app_mask), f"/w/150/lambda_squad/{df.iloc[i, 2][:-4]}.pt")
         
     # for i in [67254, 57102, 40593, 43650]:
     #     gen_sent = eval(df.iloc[i, 1])

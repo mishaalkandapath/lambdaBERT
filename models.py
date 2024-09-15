@@ -536,7 +536,7 @@ if __name__ == "__main__":
     parser.add_argument("--t_force", action="store_true")
     parser.add_argument("--save_dir", default=SAVE_DIR)
     parser.add_argument("--batch_size", default=50, type=int)
-    parsear.add_argument("--bert_is_last", action="store_true")
+    parser.add_argument("--bert_is_last", action="store_true")
 
 
     args = parser.parse_args()
