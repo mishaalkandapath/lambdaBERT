@@ -282,8 +282,8 @@ class ShuffledTransformerStack(L.LightningModule):
         out, classified_class, var_reg = out
 
         assert len(torch.unique(lambda_index_mask + var_index_mask_no.type(torch.bool) + app_index_mask + pad_mask)) == 2, torch.unique(lambda_index_mask + var_index_mask_no.type(torch.bool) + app_index_mask + pad_mask)
-        loss = criterion(out[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | app_index_mask | pad_mask)],
-                        target[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | app_index_mask | pad_mask)])
+        loss = criterion(out[~(var_index_mask_no.type(torch.bool) | pad_mask)],
+                        target[~(var_index_mask_no.type(torch.bool) | pad_mask)])
         
 
         self.log(f"{split}_loss_tokens", loss, batch_size=out.size(0), sync_dist=True) 
@@ -638,12 +638,12 @@ if __name__ == "__main__":
     parser.add_argument("--save_dir", default=SAVE_DIR)
     parser.add_argument("--batch_size", default=50, type=int)
     parser.add_argument("--custom_transformer", action="store_true")
-    parsar.add_argument("--bert_is_last", action="store_true")
+    parser.add_argument("--bert_is_last", action="store_true")
 
 
     args = parser.parse_args()
     SAVE_DIR = args.save_dir
-    main(load_chckpnt=args.model_path, shuffled=args.shuffled_mode, discrete=args.discrete, finetune=args.finetune_discrete, t_force=args.t_force, t_damp=args.t_damp, batch_size=args.batch_size, custom_t=args.custom_transformer, bert_is_last=args.bert_is_last)
+    main(load_chckpnt=args.model_path, discrete=args.discrete, finetune=args.finetune_discrete, t_force=args.t_force, t_damp=args.t_damp, batch_size=args.batch_size, custom_t=args.custom_transformer, bert_is_last=args.bert_is_last)
 
 
     # model = TransformerDecoderStack(6, 384, 12, 3072)
