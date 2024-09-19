@@ -207,7 +207,7 @@ class TransformerDecoderStack(nn.Module):
                 
     def forward(self, seq, emb, mb_pad=None, device="cuda"):
         if mb_pad is not None and self.custom: 
-            mb_pad = mb_pad != 1
+            mb_pad = mb_pad != 1 #TODO: REVISE THIS BEFORE RUNNING - DEFN OF PAD MASK HAS CHANGED IN DATALOADER
             mb_pad = torch.ones(seq.shape[-3:]).to(device=device) @ mb_pad.transpose(-1, -2).to(dtype=torch.float32)
             mb_pad = mb_pad.to(torch.bool)
 
@@ -224,7 +224,7 @@ class TransformerDecoderStack(nn.Module):
 
         final_class_emb_help = None
 
-        if not self.custom: emb *= (mb_pad.sum(-1) < 1).unsqueeze(-1)
+        if not self.custom: emb *= mb_pad
 
         for i in range(self.num_layers):
             outputs = self.decoders[i](outputs, emb, tgt_mask=tgt_mask, tgt_is_causal=True) if not self.custom else self.decoders[i](outputs, emb, mb_pad)
@@ -282,11 +282,11 @@ class ShuffledTransformerStack(L.LightningModule):
         out, classified_class, var_reg = out
 
         assert len(torch.unique(lambda_index_mask + var_index_mask_no.type(torch.bool) + app_index_mask + pad_mask)) == 2, torch.unique(lambda_index_mask + var_index_mask_no.type(torch.bool) + app_index_mask + pad_mask)
-        loss = criterion(out[~(var_index_mask_no.type(torch.bool) | pad_mask)],
-                        target[~(var_index_mask_no.type(torch.bool) | pad_mask)])
+        loss = criterion(out[~(var_index_mask_no.type(torch.bool) | ~pad_mask)],
+                        target[~(var_index_mask_no.type(torch.bool) | ~pad_mask)])
         normed_vector = lambda x : x/torch.linalg.vector_norm(x, dim=-1, ord=2)
-        normed_loss = criterion(normed_vector(out[~(var_index_mask_no.type(torch.bool) | pad_mask)]), 
-                                              normed_vector(target[~(var_index_mask_no.type(torch.bool) | pad_mask)]))
+        normed_loss = criterion(normed_vector(out[~(var_index_mask_no.type(torch.bool) | ~pad_mask)]), 
+                                              normed_vector(target[~(var_index_mask_no.type(torch.bool) | ~pad_mask)]))
 
         self.log(f"{split}_loss_tokens", loss, batch_size=out.size(0), sync_dist=True) 
         self.log(f"{split}_loss_normed_tokens", normed_loss, batch_size=out.size(0), sync_dist=True)
@@ -298,7 +298,7 @@ class ShuffledTransformerStack(L.LightningModule):
             loss += classifier_loss
 
             self.log(f"{split}_loss_classifier", classifier_loss, batch_size=out.size(0), sync_dist=True)
-
+            # --- EVERYTHING CHECKED UP UNTIL HERE:
             #loss on variables: compute the variance on the variables
             var_hot = nn.functional.one_hot(var_index_mask_no.long(), num_classes=torch.unique(var_index_mask_no).size(0))
             var_hot = var_hot.to(dtype=torch.bool)
