@@ -652,7 +652,6 @@ class ShuffledLambdaTermsDataset(Dataset):
 
         # remove the ")" from the lambda_term:
         lambda_terms = lambda_terms.replace(")", "")
-        print(path.replace("txt", "pt"))
         sent_embs, target_embs, target_embs_last, target_tokens, var_index_mask_no, lambda_index_mask, app_index_mask = torch.load(path.replace("txt", "pt"))#create_out_tensor(sentence, lambda_terms)
 
         #attach the CLS and SEP tokens to the start and end of target_embs?
@@ -680,7 +679,7 @@ class ShuffledLambdaTermsDataset(Dataset):
         var_index_mask_no = [0] + var_index_mask_no + [0]
         app_index_mask = [0] + app_index_mask + [0]
 
-        print("insnide", TOKENIZER.convert_ids_to_tokens([101 if t <0 else t for t in target_tokens]))
+        # print("insnide", TOKENIZER.convert_ids_to_tokens([101 if t <0 else t for t in target_tokens]))
         
         return sent_embs, target_embs if not self.last else target_embs_last, target_tokens, lambda_index_mask, var_index_mask_no, app_index_mask
 

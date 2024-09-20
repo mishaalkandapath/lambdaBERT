@@ -284,7 +284,7 @@ class ShuffledTransformerStack(L.LightningModule):
         assert len(torch.unique(lambda_index_mask + var_index_mask_no.type(torch.bool) + app_index_mask + pad_mask)) == 2, torch.unique(lambda_index_mask + var_index_mask_no.type(torch.bool) + app_index_mask + pad_mask)
         loss = criterion(out[~(var_index_mask_no.type(torch.bool) | pad_mask)],
                         target[~(var_index_mask_no.type(torch.bool) | pad_mask)])
-        normed_vector = lambda x : x/torch.linalg.vector_norm(x, dim=-1, ord=2)
+        normed_vector = lambda x : x/torch.linalg.vector_norm(x, dim=-1, ord=2, keepdim=True)
         normed_loss = criterion(normed_vector(out[~(var_index_mask_no.type(torch.bool) | pad_mask)]), 
                                               normed_vector(target[~(var_index_mask_no.type(torch.bool) | pad_mask)]))
 
