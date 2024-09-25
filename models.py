@@ -283,11 +283,11 @@ class ShuffledTransformerStack(L.LightningModule):
         out, classified_class, var_reg = out
 
         assert len(torch.unique(lambda_index_mask + var_index_mask_no.type(torch.bool) + app_index_mask + pad_mask)) == 2, torch.unique(lambda_index_mask + var_index_mask_no.type(torch.bool) + app_index_mask + pad_mask)
-        loss = criterion(out[~(var_index_mask_no.type(torch.bool) | ~pad_mask)],
-                        target[~(var_index_mask_no.type(torch.bool) | ~pad_mask)])
-        normed_vector = lambda x : x/torch.linalg.vector_norm(x, dim=-1, ord=2)
-        normed_loss = criterion(normed_vector(out[~(var_index_mask_no.type(torch.bool) | ~pad_mask)]), 
-                                              normed_vector(target[~(var_index_mask_no.type(torch.bool) | ~pad_mask)]))
+        loss = criterion(out[~(var_index_mask_no.type(torch.bool) | pad_mask)],
+                        target[~(var_index_mask_no.type(torch.bool) | pad_mask)])
+        normed_vector = lambda x : x/torch.linalg.vector_norm(x, dim=-1, ord=2, keepdim=True)
+        normed_loss = criterion(normed_vector(out[~(var_index_mask_no.type(torch.bool) | pad_mask)]), 
+                                              normed_vector(target[~(var_index_mask_no.type(torch.bool) | pad_mask)]))
 
         self.log(f"{split}_loss_tokens", loss, batch_size=out.size(0), sync_dist=True) 
         self.log(f"{split}_loss_normed_tokens", normed_loss, batch_size=out.size(0), sync_dist=True)
@@ -378,11 +378,11 @@ class ShuffledTransformerStack(L.LightningModule):
         return optimizer
     
 class DiscreteTransformerStack(L.LightningModule):
-    def __init__(self, model, finetune=False, bert_cls=False):
+    def __init__(self, model, finetune=False, bert_lm=False):
         super().__init__()
         self.model = model
         self.model.requires_grad_(False)
-        if self.bert_cls:
+        if bert_lm:
             bertmodel = BertForMaskedLM(BERT_MODEL.config).cls
             for parameter in bertmodel.parameters():
                 parameter.requires_grad_(False)
@@ -614,7 +614,7 @@ def main(hparams=None, load_chckpnt=False, discrete=False, finetune=False, **kwa
     if load_chckpnt: model = load_model(load_chckpnt)
     else: model = TransformerDecoderStack(4, 384, 8, 3072, custom=kwargs["custom_t"])
     if discrete: 
-        model = DiscreteTransformerStack(model, finetune=finetune)
+        model = DiscreteTransformerStack(model, finetune=finetune, bert_lm=kwargs["bert_lm"])
     else: 
         wrapper = ShuffledTransformerStack
         model = wrapper(model, t_force = kwargs["t_force"], t_damp=kwargs["t_damp"])
@@ -649,11 +649,13 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", default=50, type=int)
     parser.add_argument("--custom_transformer", action="store_true")
     parser.add_argument("--bert_is_last", action="store_true")
+    parser.add_argument("--bert_lm", action="store_true")
 
 
     args = parser.parse_args()
     SAVE_DIR = args.save_dir
-    main(load_chckpnt=args.model_path, discrete=args.discrete, finetune=args.finetune_discrete, t_force=args.t_force, t_damp=args.t_damp, batch_size=args.batch_size, custom_t=args.custom_transformer, bert_is_last=args.bert_is_last)
+    torch.manual_seed(0)
+    main(load_chckpnt=args.model_path, discrete=args.discrete, finetune=args.finetune_discrete, t_force=args.t_force, t_damp=args.t_damp, batch_size=args.batch_size, custom_t=args.custom_transformer, bert_is_last=args.bert_is_last, bert_lm=args.bert_lm)
 
 
     # model = TransformerDecoderStack(6, 384, 12, 3072)
