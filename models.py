@@ -225,7 +225,7 @@ class TransformerDecoderStack(nn.Module):
 
         final_class_emb_help = None
 
-        if not self.custom: emb *= mb_pad
+        if not self.custom: emb *= mb_pad.unsqueeze(-1)
 
         for i in range(self.num_layers):
             outputs = self.decoders[i](outputs, emb, tgt_mask=tgt_mask, tgt_is_causal=True) if not self.custom else self.decoders[i](outputs, emb, mb_pad)

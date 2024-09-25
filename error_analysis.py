@@ -24,11 +24,11 @@ def model_inference(model, dataloader):
     with torch.no_grad():
         #prpgress bar
         for batch in tqdm.tqdm(dataloader):
-            (in_embs, target_embs, target_tokens, var_index_mask_no, lambda_index_mask, app_index_mask, pad_mask, _) = batch
+            (in_embs, target_embs, target_tokens, var_index_mask_no, lambda_index_mask, app_index_mask, pad_mask, sent_pad_mask) = batch
             #move to device
-            in_embs, target_embs, target_tokens, var_index_mask_no, lambda_index_mask, app_index_mask, pad_mask = in_embs.to(DEVICE), target_embs.to(DEVICE), target_tokens.to(DEVICE), var_index_mask_no.to(DEVICE), lambda_index_mask.to(DEVICE), app_index_mask.to(DEVICE), pad_mask.to(DEVICE)
+            in_embs, target_embs, target_tokens, var_index_mask_no, lambda_index_mask, app_index_mask, pad_mask, sent_pad_mask = in_embs.to(DEVICE), target_embs.to(DEVICE), target_tokens.to(DEVICE), var_index_mask_no.to(DEVICE), lambda_index_mask.to(DEVICE), app_index_mask.to(DEVICE), pad_mask.to(DEVICE), sent_pad_mask.to(DEVICE)
 
-            out, classified_class, var_reg = model(target_embs[:, :-1, :], in_embs)
+            out, classified_class, var_reg = model(target_embs[:, :-1, :], in_embs, sent_pad_mask)
             target = target_embs[:, 1:, :]
             lambda_index_mask, app_index_mask, var_index_mask_no, pad_mask = (lambda_index_mask[:, 1:], app_index_mask[:, 1:], var_index_mask_no[:, 1:], pad_mask[:, 1:])
 
@@ -246,7 +246,7 @@ class ClassifierModel(nn.Module):
         out_stacked, classified_class_stacked, var_reg_stacked, newest_out = None, None, None, None
         list_out = []
         while newest_out != 102 and len(list_out) < 20:
-            out, classified_class, var_reg = self.model(x, in_embs, mb_pad=torch.zeros_like(in_embs), device=x.device)
+            out, classified_class, var_reg = self.model(x, in_embs, mb_pad=torch.zeros(in_embs.shape[:-1]).to(x.device), device=x.device)
             if out_stacked is None:
                 out_stacked, classified_class_stacked, var_reg_stacked = out, classified_class, var_reg
             else:
@@ -271,9 +271,9 @@ class ClassifierModel(nn.Module):
             x = out_stacked
         return list_out, classified_class_stacked, var_reg_stacked
     
-    @dispatch(torch.Tensor, torch.Tensor)   
-    def forward(self, seq, in_embs):
-        outs, classified_class, var_emb = self.model(seq, in_embs, mb_pad=torch.zeros_like(in_embs), device=seq.device)
+    @dispatch(torch.Tensor, torch.Tensor, torch.Tensor)   
+    def forward(self, seq, in_embs, mb_pad):
+        outs, classified_class, var_emb = self.model(seq, in_embs, mb_pad=mb_pad , device=seq.device)
         return self.linear(outs), classified_class, var_emb
 
 # def random_test(model, dataloader):
@@ -335,39 +335,39 @@ if __name__ == "__main__":
     model = model.to(DEVICE)
 
     # --LOAD DATA
-    dataloader = dataloader.data_init(70, mode=3)
+    dataloader = dataloader.data_init(1, mode=3)
 
 
     #-- CONFUSION MATRIX --
-    confusion_matrix = model_inference(model, dataloader)
-    plot_confusion_matrix(confusion_matrix)
+    # confusion_matrix = model_inference(model, dataloader)
+    # plot_confusion_matrix(confusion_matrix)
 
-    #--DISCRETE OUTPUT SAMPLES
-    # lines = pd.read_csv("data/input_sentences.csv", header=None)
-    # out_file = open("data/output_samples.csv", "w")
-    # out_file_csv = csv.writer(out_file)
+    # --DISCRETE OUTPUT SAMPLES
+    lines = pd.read_csv("data/input_sentences.csv", header=None)
+    out_file = open("data/output_samples.csv", "w")
+    out_file_csv = csv.writer(out_file)
 
-    # rand_lines = random.choices(range(len(lines)), k=10)
-    # write_lines = []
-    # for rand_line in rand_lines:
-    #     line = eval(lines.iloc[rand_line, 1])
-    #     target_path = lines.iloc[rand_line, 2][11:]
-    #     target_text = open(target_path, "r").readlines()[0]
-    #     words = " ".join(line).replace("...}"," ...}").replace("{..","{. .").replace("NP.","NP .").replace("NP—","NP —").replace(",}"," ,}").\
-    # replace("'re"," 're").replace("'s"," 's").replace("'ve}"," 've}").replace("!}"," !}").replace("?}"," ?}").replace("n't"," n't").\
-    # replace("'m}"," 'm}").replace("{. ..","{...").replace("{——}","{— —}").replace("{--—}","{- -—}").replace("St.", "St").split()
+    rand_lines = random.choices(range(len(lines)), k=10)
+    write_lines = []
+    for rand_line in rand_lines:
+        line = eval(lines.iloc[rand_line, 1])
+        target_path = lines.iloc[rand_line, 2][11:]
+        target_text = open(target_path, "r").readlines()[0]
+        words = " ".join(line).replace("...}"," ...}").replace("{..","{. .").replace("NP.","NP .").replace("NP—","NP —").replace(",}"," ,}").\
+    replace("'re"," 're").replace("'s"," 's").replace("'ve}"," 've}").replace("!}"," !}").replace("?}"," ?}").replace("n't"," n't").\
+    replace("'m}"," 'm}").replace("{. ..","{...").replace("{——}","{— —}").replace("{--—}","{- -—}").replace("St.", "St").split()
         
-    #     words = [word[:-1] for i, word in enumerate(words) if i % 2 != 0]
-    #     words = " ".join(words)
-    #     print("Target Text: ", target_text)
-    #     out = get_discrete_output(words, model)
-    #     print("------\n")
+        words = [word[:-1] for i, word in enumerate(words) if i % 2 != 0]
+        words = " ".join(words)
+        print("Target Text: ", target_text)
+        out = get_discrete_output(words, model)
+        print("------\n")
 
-    #     # print(words)
+        # print(words)
         
-    #     # print(out)
-    #     write_lines.append([words, out])
-    # out_file_csv.writerows(write_lines)
+        # print(out)
+        write_lines.append([words, out])
+    out_file_csv.writerows(write_lines)
 
 
 
