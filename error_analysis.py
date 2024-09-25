@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 from models import *
 import dataloader
 import tqdm, csv, random, pandas as pd
-from tokenization import get_bert_emb, TOKENIZER, LAMBDA, OPEN_RRB
+from tokenization import get_bert_emb, TOKENIZER, LAMBDA, OPEN_RRB, BERT_MODEL
 from dataloader import SEP_TOKEN, BOS_TOKEN
 
 import torch 
@@ -10,6 +10,7 @@ import torch.nn as nn
 import numpy as np
 
 import re, copy
+from transformers import BertForMaskedLM, BertConfig
 from multipledispatch import dispatch
 
 SEP_ID=102
@@ -327,6 +328,7 @@ if __name__ == "__main__":
         linear.load_state_dict(linear_weights)
         
         model = ClassifierModel(model, linear)
+    else: model = ClassifierModel(model, BertForMaskedLM(BERT_MODEL.config).cls)
 
     # model = ShuffledTransformerStack.load_from_checkpoint(args.model_path, model).model
     DEVICE = torch.device("cpu") if args.cpu else torch.device("cuda")

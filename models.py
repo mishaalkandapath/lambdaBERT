@@ -20,7 +20,8 @@ from tqdm import tqdm
 import argparse
 import copy, math
 
-from tokenization import TOKENIZER, BERT_MODEL 
+from tokenization import TOKENIZER, BERT_MODEL
+from transformers import BertConfig, BertForMaskedLM
 
 SAVE_DIR = "/home/mishaalk/scratch/lmabdaModelNoTForce/"
 
@@ -377,14 +378,20 @@ class ShuffledTransformerStack(L.LightningModule):
         return optimizer
     
 class DiscreteTransformerStack(L.LightningModule):
-    def __init__(self, model, finetune=False):
+    def __init__(self, model, finetune=False, bert_cls=False):
         super().__init__()
         self.model = model
         self.model.requires_grad_(False)
-        self.logit_linear = nn.Linear(768, TOKENIZER.vocab_size, bias=False)
-        self.b = nn.Parameter(torch.zeros(TOKENIZER.vocab_size))
-        self.logit_linear.bias = self.b 
-        self.linear = nn.Sequential(nn.Linear(768, 768), nn.GELU(), nn.LayerNorm(768, 1e-12), self.logit_linear)
+        if self.bert_cls:
+            bertmodel = BertForMaskedLM(BERT_MODEL.config).cls
+            for parameter in bertmodel.parameters():
+                parameter.requires_grad_(False)
+            self.linear = nn.Sequential(nn.Linear(768, 768), nn.GELU(), nn.LayerNorm(768, 1e-12), BertForMaskedLM(BERT_MODEL.config).cls)
+        else:
+            self.logit_linear = nn.Linear(768, TOKENIZER.vocab_size, bias=False)
+            self.b = nn.Parameter(torch.zeros(TOKENIZER.vocab_size))
+            self.logit_linear.bias = self.b 
+            self.linear = nn.Sequential(nn.Linear(768, 768), nn.GELU(), nn.LayerNorm(768, 1e-12), self.logit_linear)
         self.finetune = finetune
         
     def validation_step(self, batch, batch_idx):
@@ -487,7 +494,7 @@ class DiscreteTransformerStack(L.LightningModule):
 
         class_criterion = nn.CrossEntropyLoss()
         (in_embs, target_embs, target_tokens, var_index_mask_no, lambda_index_mask, app_index_mask, pad_mask, sent_pad_mask) = batch
-        
+
         out, classified_class, var_reg = self.model(target_embs[:, :-1, :], in_embs, sent_pad_mask, self.device)
         target = target_embs[:, 1:, :]
         target_tokens = target_tokens[:, 1:]
