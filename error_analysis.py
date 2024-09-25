@@ -23,7 +23,7 @@ def model_inference(model, dataloader):
     with torch.no_grad():
         #prpgress bar
         for batch in tqdm.tqdm(dataloader):
-            (in_embs, target_embs, target_tokens, var_index_mask_no, lambda_index_mask, app_index_mask, pad_mask) = batch
+            (in_embs, target_embs, target_tokens, var_index_mask_no, lambda_index_mask, app_index_mask, pad_mask, _) = batch
             #move to device
             in_embs, target_embs, target_tokens, var_index_mask_no, lambda_index_mask, app_index_mask, pad_mask = in_embs.to(DEVICE), target_embs.to(DEVICE), target_tokens.to(DEVICE), var_index_mask_no.to(DEVICE), lambda_index_mask.to(DEVICE), app_index_mask.to(DEVICE), pad_mask.to(DEVICE)
 
@@ -244,8 +244,8 @@ class ClassifierModel(nn.Module):
         x = torch.tensor(BOS_TOKEN).to(in_embs.device)
         out_stacked, classified_class_stacked, var_reg_stacked, newest_out = None, None, None, None
         list_out = []
-        while newest_out != 102:
-            out, classified_class, var_reg = self.model(x, in_embs)
+        while newest_out != 102 and len(list_out) < 20:
+            out, classified_class, var_reg = self.model(x, in_embs, mb_pad=torch.zeros_like(in_embs), device=x.device)
             if out_stacked is None:
                 out_stacked, classified_class_stacked, var_reg_stacked = out, classified_class, var_reg
             else:
@@ -255,24 +255,24 @@ class ClassifierModel(nn.Module):
             
 
             cls_probs = nn.functional.softmax(classified_class[-1, -1], dim=-1)
-            print(cls_probs.sort(-1))
+            # print(cls_probs.sort(-1))
             if classified_class[-1, -1].argmax() == 0:
                 sorted_stiff, newest_out = self.linear(out[0, -1, :]).sort(-1)
-                print(TOKENIZER.convert_ids_to_tokens(newest_out[-5:]))
-                print(nn.functional.softmax(sorted_stiff, dim=-1)[-5:])
+                # print(TOKENIZER.convert_ids_to_tokens(newest_out[-5:]))
+                # print(nn.functional.softmax(sorted_stiff, dim=-1)[-5:])
                 #decode and print the top 5:
 
                 newest_out = newest_out[-1].item()
                 list_out.append(newest_out)
             else:
                 list_out.append(101)
-            print("->EOW->")
+            # print("->EOW->")
             x = out_stacked
         return list_out, classified_class_stacked, var_reg_stacked
     
     @dispatch(torch.Tensor, torch.Tensor)   
     def forward(self, seq, in_embs):
-        outs, classified_class, var_emb = self.model(seq, in_embs)
+        outs, classified_class, var_emb = self.model(seq, in_embs, mb_pad=torch.zeros_like(in_embs), device=seq.device)
         return self.linear(outs), classified_class, var_emb
 
 # def random_test(model, dataloader):
@@ -337,35 +337,35 @@ if __name__ == "__main__":
 
 
     #-- CONFUSION MATRIX --
-    # confusion_matrix = model_inference(model, dataloader)
-    # plot_confusion_matrix(confusion_matrix)
+    confusion_matrix = model_inference(model, dataloader)
+    plot_confusion_matrix(confusion_matrix)
 
     #--DISCRETE OUTPUT SAMPLES
-    lines = pd.read_csv("data/input_sentences.csv", header=None)
-    out_file = open("data/output_samples.csv", "w")
-    out_file_csv = csv.writer(out_file)
+    # lines = pd.read_csv("data/input_sentences.csv", header=None)
+    # out_file = open("data/output_samples.csv", "w")
+    # out_file_csv = csv.writer(out_file)
 
-    rand_lines = random.choices(range(len(lines)), k=10)
-    write_lines = []
-    for rand_line in rand_lines:
-        line = eval(lines.iloc[rand_line, 1])
-        target_path = lines.iloc[rand_line, 2][11:]
-        target_text = open(target_path, "r").readlines()[0]
-        words = " ".join(line).replace("...}"," ...}").replace("{..","{. .").replace("NP.","NP .").replace("NP—","NP —").replace(",}"," ,}").\
-    replace("'re"," 're").replace("'s"," 's").replace("'ve}"," 've}").replace("!}"," !}").replace("?}"," ?}").replace("n't"," n't").\
-    replace("'m}"," 'm}").replace("{. ..","{...").replace("{——}","{— —}").replace("{--—}","{- -—}").replace("St.", "St").split()
+    # rand_lines = random.choices(range(len(lines)), k=10)
+    # write_lines = []
+    # for rand_line in rand_lines:
+    #     line = eval(lines.iloc[rand_line, 1])
+    #     target_path = lines.iloc[rand_line, 2][11:]
+    #     target_text = open(target_path, "r").readlines()[0]
+    #     words = " ".join(line).replace("...}"," ...}").replace("{..","{. .").replace("NP.","NP .").replace("NP—","NP —").replace(",}"," ,}").\
+    # replace("'re"," 're").replace("'s"," 's").replace("'ve}"," 've}").replace("!}"," !}").replace("?}"," ?}").replace("n't"," n't").\
+    # replace("'m}"," 'm}").replace("{. ..","{...").replace("{——}","{— —}").replace("{--—}","{- -—}").replace("St.", "St").split()
         
-        words = [word[:-1] for i, word in enumerate(words) if i % 2 != 0]
-        words = " ".join(words)
-        print("Target Text: ", target_text)
-        out = get_discrete_output(words, model)
-        print("------\n")
+    #     words = [word[:-1] for i, word in enumerate(words) if i % 2 != 0]
+    #     words = " ".join(words)
+    #     print("Target Text: ", target_text)
+    #     out = get_discrete_output(words, model)
+    #     print("------\n")
 
-        # print(words)
+    #     # print(words)
         
-        # print(out)
-        write_lines.append([words, out])
-    out_file_csv.writerows(write_lines)
+    #     # print(out)
+    #     write_lines.append([words, out])
+    # out_file_csv.writerows(write_lines)
 
 
 

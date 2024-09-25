@@ -686,7 +686,7 @@ class ShuffledLambdaTermsDataset(Dataset):
 def shuffled_collate(batch):
     sent_embedding, lambda_term_embedding, lambda_term_tokens, lambda_mask, var_mask, app_mask = zip(*batch)
     
-    sent_embedding, lambda_term_embedding, lambda_term_tokens, lambda_mask, var_mask, app_mask = [sent.squeeze(0) for sent in sent_embedding], [lambda_term.squeeze(0) for lambda_term in lambda_term_embedding], [torch.tensor(sent, dtype=torch.int64) for sent in lambda_term_tokens],[torch.tensor(sent, dtype=torch.bool).squeeze(0) for sent in lambda_mask], [torch.tensor(var, dtype=torch.bool).squeeze(0) for var in var_mask], [torch.tensor(app, dtype=torch.bool).squeeze(0) for app in app_mask]
+    sent_embedding, lambda_term_embedding, lambda_term_tokens, lambda_mask, var_mask, app_mask = [sent.squeeze(0) for sent in sent_embedding], [lambda_term.squeeze(0) for lambda_term in lambda_term_embedding], [torch.tensor(sent, dtype=torch.int64) for sent in lambda_term_tokens],[torch.tensor(sent, dtype=torch.bool).squeeze(0) for sent in lambda_mask], [torch.tensor(var, dtype=torch.int64).squeeze(0) for var in var_mask], [torch.tensor(app, dtype=torch.bool).squeeze(0) for app in app_mask]
     sent_embedding_batched = pad_sequence(sent_embedding, batch_first=True, padding_value = 15)
     
     lambda_term_embedding_batched = pad_sequence(lambda_term_embedding, batch_first=True, padding_value = 15)
@@ -697,10 +697,11 @@ def shuffled_collate(batch):
 
     lambda_pad_mask = lambda_term_embedding_batched == 15
     lambda_term_embedding_batched = lambda_term_embedding_batched.masked_fill(lambda_pad_mask, 0)
-    lambda_pad_mask = lambda_pad_mask.sum(-1) >= 1
+    lambda_pad_mask = lambda_pad_mask.sum(-1) >= 1 #so anything thats a padded token position is 0
 
     sent_pad_mask = sent_embedding_batched == 15
     sent_embedding_batched = sent_embedding_batched.masked_fill(sent_pad_mask, 0)
+    sent_pad_mask = sent_pad_mask.sum(-1) >= 1 #similarly, anything thats a padded token position is 0
     # sent_pad_mask = sent_embedding_batched.sum(-1) >= 1
     return sent_embedding_batched, lambda_term_embedding_batched, lambda_term_tokens_batched, var_mask_batched, lambda_mask_batched, app_mask_batched, lambda_pad_mask, sent_pad_mask
 
@@ -711,7 +712,7 @@ def data_init(batch_size, mode=0, last=False):
     # tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
     dataset = ShuffledLambdaTermsDataset(DATA_PATH + 'input_sentences.csv', DATA_PATH + 'lambda_terms/', last=last)
     #split the datset 70 20 10 split
-    train_size = int(0.7 * len(dataset))
+    train_size = int(0.8 * len(dataset))
     val_size = int(0.2 * len(dataset))
     test_size = len(dataset) - train_size - val_size
     

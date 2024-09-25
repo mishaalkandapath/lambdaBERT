@@ -207,7 +207,7 @@ class TransformerDecoderStack(nn.Module):
                 
     def forward(self, seq, emb, mb_pad=None, device="cuda"):
         if mb_pad is not None and self.custom: 
-            mb_pad = mb_pad != 1
+            mb_pad = mb_pad != 1 #TODO: REVISE THIS BEFORE RUNNING - DEFN OF PAD MASK HAS CHANGED IN DATALOADER
             mb_pad = torch.ones(seq.shape[-3:]).to(device=device) @ mb_pad.transpose(-1, -2).to(dtype=torch.float32)
             mb_pad = mb_pad.to(torch.bool)
 
@@ -224,7 +224,7 @@ class TransformerDecoderStack(nn.Module):
 
         final_class_emb_help = None
 
-        if not self.custom: emb *= (mb_pad.sum(-1) < 1).unsqueeze(-1)
+        if not self.custom: emb *= mb_pad.unsqueeze(-1)
 
         for i in range(self.num_layers):
             outputs = self.decoders[i](outputs, emb, tgt_mask=tgt_mask, tgt_is_causal=True) if not self.custom else self.decoders[i](outputs, emb, mb_pad)
@@ -298,7 +298,7 @@ class ShuffledTransformerStack(L.LightningModule):
             loss += classifier_loss
 
             self.log(f"{split}_loss_classifier", classifier_loss, batch_size=out.size(0), sync_dist=True)
-
+            # --- EVERYTHING CHECKED UP UNTIL HERE:
             #loss on variables: compute the variance on the variables
             var_hot = nn.functional.one_hot(var_index_mask_no.long(), num_classes=torch.unique(var_index_mask_no).size(0))
             var_hot = var_hot.to(dtype=torch.bool)
@@ -646,6 +646,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     SAVE_DIR = args.save_dir
+    torch.manual_seed(0)
     main(load_chckpnt=args.model_path, discrete=args.discrete, finetune=args.finetune_discrete, t_force=args.t_force, t_damp=args.t_damp, batch_size=args.batch_size, custom_t=args.custom_transformer, bert_is_last=args.bert_is_last)
 
 
