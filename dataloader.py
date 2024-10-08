@@ -8,10 +8,12 @@ import pandas as pd
 from tokenization import TOKENIZER, BERT_MODEL, create_out_tensor
 from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence
 
+import traceback
+
 #create a directory where the key is a csv. each row has first column as the raw text sentence, and the second col being the 
 # path to the file that stores all its lambda terms
 
-DATA_PATH = "/home/mishaalk/projects/def-gpenn/mishaalk/lambdaBERT/data/"
+DATA_PATH = "/w/150/lambda_squad/lambdaBERT/data/"
 BOS_TOKEN_LAST = [[[ 6.6404e-03,  1.2032e-01, -2.5759e-02,  1.1922e-01,  1.6584e-01,
         -2.4184e-02,  4.3246e-02, -9.4100e-02,  4.8467e-02,  1.7669e-01,
         -7.7217e-02, -2.4837e-02, -1.4056e-01,  1.7926e-01, -6.4828e-01,
@@ -633,7 +635,7 @@ SEP_TOKEN = [[[ 1.3052e+00, -8.8454e-01,  3.9420e+00,  2.9212e+00, -7.4760e-01,
 class ShuffledLambdaTermsDataset(Dataset):
     def __init__(self, input_sentences_file, main_dir, transform=None, target_transform=None, last=False):
         self.main_dir = main_dir
-        self.input_sentences = pd.read_csv(input_sentences_file)
+        self.input_sentences = pd.read_csv(input_sentences_file, nrows=72000)
         self.transform = transform
         self.target_transform = target_transform
         self.last = last
@@ -642,10 +644,8 @@ class ShuffledLambdaTermsDataset(Dataset):
         return len(self.input_sentences)
 
     def __getitem__(self, index):
-        sentence = self.input_sentences.iloc[index, 1]
-        if sentence[0] == '""': sentence = sentence[1]
-        if sentence[-1] == '""': sentence = sentence[:-1]
         path = self.input_sentences.iloc[index, 2]
+        if type(path) is not str: path = path.name
         path = DATA_PATH + path[len("lambdaBERT/data/"):]
         with open(path, 'r') as f:
             lambda_terms = f.readlines()[0].strip()
@@ -735,7 +735,3 @@ def data_init(batch_size, mode=0, last=False):
         #just one dataloader
         train_dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=9, collate_fn=shuffled_collate)
         return train_dataloader
-
-
-
-            

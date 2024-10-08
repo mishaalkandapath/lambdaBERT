@@ -52,6 +52,8 @@ def plot_confusion_matrix(confusion_matrix):
     plt.imshow(confusion_matrix, cmap="viridis", )
     plt.xticks(list(label_map.keys()), list(label_map.values()))
     plt.yticks(list(label_map.keys()), list(label_map.values()))
+    plt.xlabel("Predicted")
+    plt.ylabel("True")
     plt.colorbar()
     plt.savefig("confusion_matrix.png")
 
@@ -320,6 +322,7 @@ if __name__ == "__main__":
     model = TransformerDecoderStack(4, 384, 8, 3072)
     checkpoint = torch.load(args.model_path)
     model_weights = {k.replace("model.", ""): v for k, v in checkpoint["state_dict"].items() if k.startswith("model.")}
+    model_weights.update({k: torch.zeros_like(v) for k, v in model.state_dict().items() if k not in model_weights})
     model.load_state_dict(model_weights)
 
     if any([not k.startswith("model.") for k in checkpoint["state_dict"].keys()]):
@@ -339,35 +342,35 @@ if __name__ == "__main__":
 
 
     #-- CONFUSION MATRIX --
-    # confusion_matrix = model_inference(model, dataloader)
-    # plot_confusion_matrix(confusion_matrix)
+    confusion_matrix = model_inference(model, dataloader)
+    plot_confusion_matrix(confusion_matrix)
 
     # --DISCRETE OUTPUT SAMPLES
-    lines = pd.read_csv("data/input_sentences.csv", header=None)
-    out_file = open("data/output_samples.csv", "w")
-    out_file_csv = csv.writer(out_file)
+    # lines = pd.read_csv("data/input_sentences.csv", header=None)
+    # out_file = open("data/output_samples.csv", "w")
+    # out_file_csv = csv.writer(out_file)
 
-    rand_lines = random.choices(range(len(lines)), k=10)
-    write_lines = []
-    for rand_line in rand_lines:
-        line = eval(lines.iloc[rand_line, 1])
-        target_path = lines.iloc[rand_line, 2][11:]
-        target_text = open(target_path, "r").readlines()[0]
-        words = " ".join(line).replace("...}"," ...}").replace("{..","{. .").replace("NP.","NP .").replace("NP—","NP —").replace(",}"," ,}").\
-    replace("'re"," 're").replace("'s"," 's").replace("'ve}"," 've}").replace("!}"," !}").replace("?}"," ?}").replace("n't"," n't").\
-    replace("'m}"," 'm}").replace("{. ..","{...").replace("{——}","{— —}").replace("{--—}","{- -—}").replace("St.", "St").split()
+    # rand_lines = random.choices(range(len(lines)), k=10)
+    # write_lines = []
+    # for rand_line in rand_lines:
+    #     line = eval(lines.iloc[rand_line, 1])
+    #     target_path = lines.iloc[rand_line, 2][11:]
+    #     target_text = open(target_path, "r").readlines()[0]
+    #     words = " ".join(line).replace("...}"," ...}").replace("{..","{. .").replace("NP.","NP .").replace("NP—","NP —").replace(",}"," ,}").\
+    # replace("'re"," 're").replace("'s"," 's").replace("'ve}"," 've}").replace("!}"," !}").replace("?}"," ?}").replace("n't"," n't").\
+    # replace("'m}"," 'm}").replace("{. ..","{...").replace("{——}","{— —}").replace("{--—}","{- -—}").replace("St.", "St").split()
         
-        words = [word[:-1] for i, word in enumerate(words) if i % 2 != 0]
-        words = " ".join(words)
-        print("Target Text: ", target_text)
-        out = get_discrete_output(words, model)
-        print("------\n")
+    #     words = [word[:-1] for i, word in enumerate(words) if i % 2 != 0]
+    #     words = " ".join(words)
+    #     print("Target Text: ", target_text)
+    #     out = get_discrete_output(words, model)
+    #     print("------\n")
 
-        # print(words)
+    #     # print(words)
         
-        # print(out)
-        write_lines.append([words, out])
-    out_file_csv.writerows(write_lines)
+    #     # print(out)
+    #     write_lines.append([words, out])
+    # out_file_csv.writerows(write_lines)
 
 
 
