@@ -161,99 +161,58 @@ class EDecoderBlock(nn.Module):
 class TransformerDecoderStack(nn.Module):
     def __init__(self, num_layers, d_model, num_heads, d_ff, dropout=0.2, mode=0, devices=[],custom=False):
         super(TransformerDecoderStack, self).__init__()
-        self.mode = mode
-        if mode:
-            assert len(devices) % 2 == 0, "Number of devices must be even"
-            # make device atts
-            for i, device in enumerate(devices):
-                assert torch.cuda.is_available(device), f"Device {device} is not available"
-                setattr(self, f"device_{i}", device)
+        self.custom = custom
+        self.d_model = d_model
+        self.num_layers = num_layers
+        self.num_heads = num_heads
+        self.initial_forward = nn.Linear(768, d_model)
+        self.final_forward = nn.Linear(d_model, 768)
+        self.classifier_forward = nn.Linear(d_model, 4)
 
-            self.d_model = d_model
-            self.num_layers = num_layers
-            self.initial_forward = nn.Linear(768, d_model, device = getattr(self, f"device_{0}"))
-            self.final_forward = nn.Linear(d_model, 768, device=getattr(self, f"device_{len(devices) - 1}"))
+        # #variable regression
+        # self.reg_forward1 = nn.Linear(d_model, d_model)
+        # self.reg_forward2 = nn.Linear(d_model, 10)
+        # self.reg_act = nn.GELU()
 
-            self.decoders = nn.ModuleList([nn.TransformerDecoderLayer(d_model, num_heads, dropout=dropout, device=device, batch_first=True)
-                                            for _ in range(self.num_layers)])
+        self.decoders = nn.ModuleList([nn.TransformerDecoderLayer(d_model, num_heads, dropout=dropout, batch_first=True, norm_first=True)
+                                        for _ in range(self.num_layers)]) if not custom else \
+                                        nn.ModuleList([EDecoderBlock(d_model, d_model//num_heads, num_heads, dropout=dropout) for _ in range(self.num_layers)])
+        
+        self.pe_embed = PositionalEncoding(self.d_model)
 
-            self.layers_in_a_gpu = num_layers // len(devices)
-            for i in range(self.num_layers): # send decoders to the appropriate devices
-                self.decoders[i] = self.decoders[i].to(getattr(self, f"device_{i//self.layers_in_a_gpu}"))
-
-            pytorch_total_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
-            print(f"Total Trainable Params: {pytorch_total_params}")
-        else:
-            self.custom = custom
-            self.d_model = d_model
-            self.num_layers = num_layers
-            self.num_heads = num_heads
-            self.initial_forward = nn.Linear(768, d_model)
-            self.final_forward = nn.Linear(d_model, 768)
-            self.classifier_forward = nn.Linear(d_model, 4)
-            self.reg_forward1 = nn.Linear(d_model, d_model)
-            self.reg_forward2 = nn.Linear(d_model, 10)
-            self.reg_act = nn.GELU()
-
-            self.decoders = nn.ModuleList([nn.TransformerDecoderLayer(d_model, num_heads, dropout=dropout, batch_first=True, norm_first=True)
-                                            for _ in range(self.num_layers)]) if not custom else \
-                                            nn.ModuleList([EDecoderBlock(d_model, d_model//num_heads, num_heads, dropout=dropout) for _ in range(self.num_layers)])
-            
-            self.pe_embed = PositionalEncoding(self.d_model)
-            
-            self.layers_in_a_gpu = self.num_layers
-
-            pytorch_total_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
-            print(f"Total Trainable Params: {pytorch_total_params}")
+        pytorch_total_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        print(f"Total Trainable Params: {pytorch_total_params}")
                 
     def forward(self, seq, emb, mb_pad=None, device="cuda"):
         if mb_pad is not None and self.custom: 
-            mb_pad = mb_pad != 1 #TODO: REVISE THIS BEFORE RUNNING - DEFN OF PAD MASK HAS CHANGED IN DATALOADER
+            mb_pad = mb_pad != 1 
             mb_pad = torch.ones(seq.shape[-3:]).to(device=device) @ mb_pad.transpose(-1, -2).to(dtype=torch.float32)
             mb_pad = mb_pad.to(torch.bool)
 
         outputs = seq
-        #start from gpu 0
-        if self.mode:
-            outputs = outputs.to(getattr(self, f"device_{0}"))
-            emb = emb.to(getattr(self, f"device_{0}"))
 
         outputs = self.pe_embed(self.initial_forward(outputs))
         emb = self.initial_forward(emb)
         tgt_mask = torch.nn.Transformer.generate_square_subsequent_mask(seq.size(1)).to(emb.device)
 
-
-        final_class_emb_help = None
-
-        if not self.custom: emb *= mb_pad.unsqueeze(-1)
+        if not self.custom: emb *= (mb_pad.unsqueeze(-1) != 1)
 
         for i in range(self.num_layers):
             outputs = self.decoders[i](outputs, emb, tgt_mask=tgt_mask, tgt_is_causal=True) if not self.custom else self.decoders[i](outputs, emb, mb_pad)
-
-            #change devices if you need to 
-            if (i+1) % self.layers_in_a_gpu == 0 and i != self.num_layers - 1 and self.mode:
-                outputs = outputs.to(getattr(self, f"device_{i//self.layers_in_a_gpu}"))
-                emb = emb.to(getattr(self, f"device_{i//self.layers_in_a_gpu}"))
-            if final_class_emb_help is None and i == self.num_layers - 2:
-                final_class_emb_help = outputs
-            elif self.num_layers-1>i > self.num_layers - 2:
-                final_class_emb_help += outputs
-
-        outputs = self.final_forward(outputs)
+        outputs = self.final_forward(outputs) # back to 768
 
         #Variable classification and prediction
-        classified_class = self.classifier_forward(final_class_emb_help)
+        classified_class = self.classifier_forward(outputs) # predict the classifier absed on this 
 
-        var_emb = self.reg_forward2(self.reg_act(self.reg_forward1(final_class_emb_help)))
-
+        # var_emb = self.reg_forward2(self.reg_act(self.reg_forward1(final_class_emb_help)))
+        var_emb = torch.zeros_like(outputs.sum(-1).unsqueeze(-1))
+      
         return outputs, classified_class, var_emb
    
 class ShuffledTransformerStack(L.LightningModule):
     def __init__(self, model, t_force=True, t_damp=0.95):
         super().__init__()
         self.model = model
-        self.t_force = t_force
-        self.t_damp = t_damp if self.t_force else 1
         #pick a random bunch of parameters:
         # self.reference_param = None
         # self.fin_reference = None
@@ -299,44 +258,44 @@ class ShuffledTransformerStack(L.LightningModule):
             loss += classifier_loss
 
             self.log(f"{split}_loss_classifier", classifier_loss, batch_size=out.size(0), sync_dist=True)
-            # --- EVERYTHING CHECKED UP UNTIL HERE:
-            #loss on variables: compute the variance on the variables
-            var_hot = nn.functional.one_hot(var_index_mask_no.long(), num_classes=torch.unique(var_index_mask_no).size(0))
-            var_hot = var_hot.to(dtype=torch.bool)
-            out_vars = var_reg.unsqueeze(1) * var_hot.transpose(1, 2).unsqueeze(-1)
+            # # --- EVERYTHING CHECKED UP UNTIL HERE:
+            # #loss on variables: compute the variance on the variables
+            # var_hot = nn.functional.one_hot(var_index_mask_no.long(), num_classes=torch.unique(var_index_mask_no).size(0))
+            # var_hot = var_hot.to(dtype=torch.bool)
+            # out_vars = var_reg.unsqueeze(1) * var_hot.transpose(1, 2).unsqueeze(-1)
            
-            # ---- VARIANCE LOSS ----           
-            out_var_mean = out_vars.mean(dim=-2, keepdim=True) #* mean_rescale # average on the tokens
-            out_var_difference = out_vars - (out_var_mean * var_hot.transpose(1, 2).unsqueeze(-1))
-            var_loss = torch.mean(out_var_difference**2, dim=-2, keepdim=True) #* mean_rescale
-            var_loss = torch.mean(torch.sum(var_loss.sum(dim=-1).squeeze(-1), dim=-1))
-            loss += var_loss
+            # # ---- VARIANCE LOSS ----           
+            # out_var_mean = out_vars.mean(dim=-2, keepdim=True) #* mean_rescale # average on the tokens
+            # out_var_difference = out_vars - (out_var_mean * var_hot.transpose(1, 2).unsqueeze(-1))
+            # var_loss = torch.mean(out_var_difference**2, dim=-2, keepdim=True) #* mean_rescale
+            # var_loss = torch.mean(torch.sum(var_loss.sum(dim=-1).squeeze(-1), dim=-1))
+            # # loss += var_loss
 
-            self.log(f"{split}_loss_variance", var_loss, batch_size=out.size(0), sync_dist=True)
+            # self.log(f"{split}_loss_variance", var_loss, batch_size=out.size(0), sync_dist=True)
 
-            # --- COS SIM LOSS ----
-            out_vars_normed = (out_vars.pow(2).sum(dim=-1) + 1e-6).sqrt()
-            out_vars_normed = out_vars / out_vars_normed.unsqueeze(-1)
-            out_vars_sim = out_vars_normed @ out_vars_normed.transpose(-1, -2) # similarity within classes, everything else is 0
-            out_vars_sim_mask = var_hot.transpose(1, 2).unsqueeze(-1).to(dtype=torch.float32) @ var_hot.transpose(1, 2).unsqueeze(-2).to(dtype=torch.float32)
-            var_loss = 1 - (out_vars_sim + (out_vars_sim_mask == 0))
-            loss += var_loss.mean()
+            # # --- COS SIM LOSS ----
+            # out_vars_normed = (out_vars.pow(2).sum(dim=-1) + 1e-6).sqrt()
+            # out_vars_normed = out_vars / out_vars_normed.unsqueeze(-1)
+            # out_vars_sim = out_vars_normed @ out_vars_normed.transpose(-1, -2) # similarity within classes, everything else is 0
+            # out_vars_sim_mask = var_hot.transpose(1, 2).unsqueeze(-1).to(dtype=torch.float32) @ var_hot.transpose(1, 2).unsqueeze(-2).to(dtype=torch.float32)
+            # var_loss = 1 - (out_vars_sim + (out_vars_sim_mask == 0))
+            # # loss += var_loss.mean()
 
-            self.log(f"{split}_loss_vars", var_loss.mean(), batch_size=out.size(0), sync_dist=True)
+            # self.log(f"{split}_loss_vars", var_loss.mean(), batch_size=out.size(0), sync_dist=True)
 
-            # --- Ortho loss for sim loss
-            out_var_mean_normed = out_vars_normed.mean(dim=-2, keepdim=True)
+            # # --- Ortho loss for sim loss
+            # out_var_mean_normed = out_vars_normed.mean(dim=-2, keepdim=True)
 
-            # Common component for ortho loss
-            ortho_loss = out_var_mean_normed.squeeze(-2) @ out_var_mean_normed.squeeze(-2).transpose(-1, -2)
+            # # Common component for ortho loss
+            # ortho_loss = out_var_mean_normed.squeeze(-2) @ out_var_mean_normed.squeeze(-2).transpose(-1, -2)
 
-            #mask diagonals out
-            ortho_loss = torch.abs(ortho_loss) * (1 - torch.eye(ortho_loss.size(-1)).to(ortho_loss.device))
-            loss += ortho_loss.mean()
+            # #mask diagonals out
+            # ortho_loss = torch.abs(ortho_loss) * (1 - torch.eye(ortho_loss.size(-1)).to(ortho_loss.device))
+            # # loss += ortho_loss.mean()
 
-            self.log(f"{split}_loss_ortho", ortho_loss.mean(), batch_size=out.size(0), sync_dist=True)
+            # self.log(f"{split}_loss_ortho", ortho_loss.mean(), batch_size=out.size(0), sync_dist=True)
 
-            self.log(f"{split}_var_norm", torch.mean((out_vars.pow(2).sum(dim=-1) + 1e-6).sqrt()), sync_dist=True)
+            # self.log(f"{split}_var_norm", torch.mean((out_vars.pow(2).sum(dim=-1) + 1e-6).sqrt()), sync_dist=True)
 
         self.log(f"{split}_loss", loss, batch_size=out.size(0), sync_dist=True, prog_bar=True) 
 
@@ -362,14 +321,14 @@ class ShuffledTransformerStack(L.LightningModule):
                                lambda_index_mask, app_index_mask, var_index_mask_no, pad_mask, split="train")
 
         # roll out
-        out, target = out[:, :-1, :], target[:, 1:, :]
-        while (self.t_force and target.size(1) > 2 and (target_embs.size(1) - target.size(1)) <= 10):
-            out, classified_class, var_reg = self.model(out, in_embs)
-            lambda_index_mask, app_index_mask, var_index_mask_no, pad_mask = (lambda_index_mask[:, 1:], app_index_mask[:, 1:], var_index_mask_no[:, 1:], pad_mask[:, 1:])
-            loss += (self.t_damp ** (target_embs.size(1) - target.size(1))) * self.common_loss([criterion, class_criterion], [out, classified_class, var_reg], target,
-                               lambda_index_mask, app_index_mask, var_index_mask_no, pad_mask, split="train")
-            out = out[:, :-1, :]
-            target = target[:, 1:, :]
+        # out, target = out[:, :-1, :], target[:, 1:, :]
+        # while (self.t_force and target.size(1) > 2 and (target_embs.size(1) - target.size(1)) <= 10):
+        #     out, classified_class, var_reg = self.model(out, in_embs)
+        #     lambda_index_mask, app_index_mask, var_index_mask_no, pad_mask = (lambda_index_mask[:, 1:], app_index_mask[:, 1:], var_index_mask_no[:, 1:], pad_mask[:, 1:])
+        #     loss += (self.t_damp ** (target_embs.size(1) - target.size(1))) * self.common_loss([criterion, class_criterion], [out, classified_class, var_reg], target,
+        #                        lambda_index_mask, app_index_mask, var_index_mask_no, pad_mask, split="train")
+        #     out = out[:, :-1, :]
+        #     target = target[:, 1:, :]
 
         return loss
         
