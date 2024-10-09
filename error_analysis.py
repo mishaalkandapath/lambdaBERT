@@ -3,7 +3,7 @@ from models import *
 import dataloader
 import tqdm, csv, random, pandas as pd
 from tokenization import get_bert_emb, TOKENIZER, LAMBDA, OPEN_RRB, BERT_MODEL
-from dataloader import SEP_TOKEN, BOS_TOKEN
+from dataloader import SEP_TOKEN, BOS_TOKEN, BOS_TOKEN_LAST
 
 import torch 
 import torch.nn as nn
@@ -21,25 +21,50 @@ def model_inference(model, dataloader):
     global DEVICE
     model.eval()
     confusion_matrix = torch.zeros(4, 4)
+    average_loss = 0
+    count = 0
+    outs = []
+    cls_outs = []
     with torch.no_grad():
         #prpgress bar
-        for batch in tqdm.tqdm(dataloader):
+        pbar = tqdm.tqdm(total=len(dataloader))
+        for k, batch in enumerate(dataloader):
             (in_embs, target_embs, target_tokens, var_index_mask_no, lambda_index_mask, app_index_mask, pad_mask, sent_pad_mask) = batch
             #move to device
             in_embs, target_embs, target_tokens, var_index_mask_no, lambda_index_mask, app_index_mask, pad_mask, sent_pad_mask = in_embs.to(DEVICE), target_embs.to(DEVICE), target_tokens.to(DEVICE), var_index_mask_no.to(DEVICE), lambda_index_mask.to(DEVICE), app_index_mask.to(DEVICE), pad_mask.to(DEVICE), sent_pad_mask.to(DEVICE)
-
-            out, classified_class, var_reg = model(target_embs[:, :-1, :], in_embs, sent_pad_mask)
+            
+            out, classified_class, var_reg = get_discrete_output(in_embs, model, target_tokens.shape[1])#model(target_embs[:, :-1, :], in_embs, sent_pad_mask)
             target = target_embs[:, 1:, :]
             lambda_index_mask, app_index_mask, var_index_mask_no, pad_mask = (lambda_index_mask[:, 1:], app_index_mask[:, 1:], var_index_mask_no[:, 1:], pad_mask[:, 1:])
-
+        
             #classiifer truth
             gt_cls_mask = var_index_mask_no.type(torch.bool) + 2*lambda_index_mask.type(torch.bool) + 3*app_index_mask.type(torch.bool) #because lambda's class is 2
-
+            loss = nn.functional.cross_entropy(classified_class.view(-1, 4), gt_cls_mask.view(-1), reduction="none")
+            loss = ((loss) * (0.95 ** (torch.arange(loss.shape[0])).to(gt_cls_mask.device))).mean()
+            average_loss += loss.item()
+            count += 1
+            pbar.set_description(f"Loss: {loss.item()/count}")
+            pbar.update(1)
             #add to confusion matrix
-            classified_class = classified_class.argmax(dim=-1)
+            classified_class_ = classified_class.argmax(dim=-1)
             for i in range(4):
                 for j in range(4):
-                    confusion_matrix[i, j] += ((classified_class == j) & (gt_cls_mask == i)).sum().detach().cpu()
+                    confusion_matrix[i, j] += ((classified_class_ == j) & (gt_cls_mask == i)).sum().detach().cpu()
+
+            #Write the written outputs:
+            out = out[0].argmax(-1) if len(out.shape) == 3 else out[0]
+            outs.append([classified_class_.squeeze(0).tolist(), get_out_list(out, classified_class, var_reg)])
+            # outs.append([classified_class_.squeeze(0).tolist(), get_discrete_output(in_embs, model)])
+            if k>10: break
+    # #write
+    loss = average_loss / count
+    print("Average Loss: ", loss)
+
+    csv_file = open("outputs.csv", "w")
+    csv_writer = csv.writer(csv_file)
+    csv_writer.writerows(outs)
+    csv_file.close()
+
     return confusion_matrix
 
 # plot confusion matrix
@@ -108,14 +133,17 @@ def scope_violation_count(words):
     return out_of_bounds
 
 
-def get_discrete_output(input_sent, model):
+def get_discrete_output(input_embs, model, max_len=20):
     model.eval()
     #bert tokenize and get embeddings
-    tokenized = TOKENIZER(input_sent, return_tensors="pt", padding=True)
-    input_embs, _ = get_bert_emb(tokenized)
+    # tokenized = TOKENIZER(input_sent, return_tensors="pt", padding=True)
+    # input_embs, _ = get_bert_emb(tokenized)
     input_embs = input_embs.to(DEVICE)
     #model inference
-    out, classified_class, var_reg = model(input_embs)
+    out, classified_class, var_reg = model(input_embs, max_len=max_len)
+    return out, classified_class, var_reg
+
+def get_out_list(out, classified_class, var_reg):
     classified_class = classified_class.argmax(dim=-1).squeeze(0)
     var_reg = var_reg.squeeze(0)
     out_list = TOKENIZER.convert_ids_to_tokens(out) 
@@ -243,14 +271,15 @@ class ClassifierModel(nn.Module):
         self.linear = linear
     
     @dispatch(torch.Tensor)
-    def forward(self, in_embs):
-        x = torch.tensor(BOS_TOKEN).to(in_embs.device)
-        out_stacked, classified_class_stacked, var_reg_stacked, newest_out = None, None, None, None
+    def forward(self, in_embs, max_len=20):
+        x = torch.tensor(BOS_TOKEN_LAST).to(in_embs.device)
+        out_stacked, classified_class_stacked, var_reg_stacked, newest_out = x, None, None, None
         list_out = []
-        while newest_out != 102 and len(list_out) < 20:
-            out, classified_class, var_reg = self.model(x, in_embs, mb_pad=torch.zeros(in_embs.shape[:-1]).to(x.device), device=x.device)
-            if out_stacked is None:
-                out_stacked, classified_class_stacked, var_reg_stacked = out, classified_class, var_reg
+        while newest_out != 102 and len(list_out) < max_len-1:
+            out, classified_class, var_reg = self.model(x, in_embs, mb_pad=torch.zeros(in_embs.shape[:-1]).to(x.device).to(torch.bool), device=x.device)
+            if classified_class_stacked is None:
+                classified_class_stacked, var_reg_stacked = classified_class, var_reg
+                out_stacked = torch.cat([out_stacked, out[:, -1].unsqueeze(1)], dim=1) 
             else:
                 out_stacked = torch.cat([out_stacked, out[:, -1].unsqueeze(1)], dim=1)
                 classified_class_stacked = torch.cat([classified_class_stacked, classified_class[:, -1].unsqueeze(1)], dim=1)
@@ -271,7 +300,7 @@ class ClassifierModel(nn.Module):
                 list_out.append(101)
             # print("->EOW->")
             x = out_stacked
-        return list_out, classified_class_stacked, var_reg_stacked
+        return torch.tensor(list_out).unsqueeze(0), classified_class_stacked, var_reg_stacked
     
     @dispatch(torch.Tensor, torch.Tensor, torch.Tensor)   
     def forward(self, seq, in_embs, mb_pad):

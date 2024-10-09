@@ -733,5 +733,5 @@ def data_init(batch_size, mode=0, last=False):
         return train_dataloader, val_dataloader
     else:
         #just one dataloader
-        train_dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=9, collate_fn=shuffled_collate)
+        train_dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=9, collate_fn=shuffled_collate)
         return train_dataloader
