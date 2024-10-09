@@ -170,9 +170,9 @@ class TransformerDecoderStack(nn.Module):
         self.classifier_forward = nn.Linear(d_model, 4)
 
         # #variable regression
-        # self.reg_forward1 = nn.Linear(d_model, d_model)
-        # self.reg_forward2 = nn.Linear(d_model, 10)
-        # self.reg_act = nn.GELU()
+        self.reg_forward1 = nn.Linear(d_model, d_model)
+        self.reg_forward2 = nn.Linear(d_model, 10)
+        self.reg_act = nn.GELU()
 
         self.decoders = nn.ModuleList([nn.TransformerDecoderLayer(d_model, num_heads, dropout=dropout, batch_first=True, norm_first=True)
                                         for _ in range(self.num_layers)]) if not custom else \
@@ -199,13 +199,13 @@ class TransformerDecoderStack(nn.Module):
 
         for i in range(self.num_layers):
             outputs = self.decoders[i](outputs, emb, tgt_mask=tgt_mask, tgt_is_causal=True) if not self.custom else self.decoders[i](outputs, emb, mb_pad)
-        outputs = self.final_forward(outputs) # back to 768
-
+        
         #Variable classification and prediction
         classified_class = self.classifier_forward(outputs) # predict the classifier absed on this 
+        outputs = self.final_forward(outputs) # back to 768
 
-        # var_emb = self.reg_forward2(self.reg_act(self.reg_forward1(final_class_emb_help)))
-        var_emb = torch.zeros_like(outputs.sum(-1).unsqueeze(-1))
+        var_emb = self.reg_forward2(self.reg_act(self.reg_forward1(outputs)))
+        # var_emb = torch.zeros_like(outputs.sum(-1).unsqueeze(-1))
       
         return outputs, classified_class, var_emb
    
@@ -258,44 +258,44 @@ class ShuffledTransformerStack(L.LightningModule):
             loss += classifier_loss
 
             self.log(f"{split}_loss_classifier", classifier_loss, batch_size=out.size(0), sync_dist=True)
-            # # --- EVERYTHING CHECKED UP UNTIL HERE:
-            # #loss on variables: compute the variance on the variables
-            # var_hot = nn.functional.one_hot(var_index_mask_no.long(), num_classes=torch.unique(var_index_mask_no).size(0))
-            # var_hot = var_hot.to(dtype=torch.bool)
-            # out_vars = var_reg.unsqueeze(1) * var_hot.transpose(1, 2).unsqueeze(-1)
+            # --- EVERYTHING CHECKED UP UNTIL HERE:
+            #loss on variables: compute the variance on the variables
+            var_hot = nn.functional.one_hot(var_index_mask_no.long(), num_classes=torch.unique(var_index_mask_no).size(0))
+            var_hot = var_hot.to(dtype=torch.bool)
+            out_vars = var_reg.unsqueeze(1) * var_hot.transpose(1, 2).unsqueeze(-1)
            
-            # # ---- VARIANCE LOSS ----           
-            # out_var_mean = out_vars.mean(dim=-2, keepdim=True) #* mean_rescale # average on the tokens
-            # out_var_difference = out_vars - (out_var_mean * var_hot.transpose(1, 2).unsqueeze(-1))
-            # var_loss = torch.mean(out_var_difference**2, dim=-2, keepdim=True) #* mean_rescale
-            # var_loss = torch.mean(torch.sum(var_loss.sum(dim=-1).squeeze(-1), dim=-1))
-            # # loss += var_loss
+            # ---- VARIANCE LOSS ----           
+            out_var_mean = out_vars.mean(dim=-2, keepdim=True) #* mean_rescale # average on the tokens
+            out_var_difference = out_vars - (out_var_mean * var_hot.transpose(1, 2).unsqueeze(-1))
+            var_loss = torch.mean(out_var_difference**2, dim=-2, keepdim=True) #* mean_rescale
+            var_loss = torch.mean(torch.sum(var_loss.sum(dim=-1).squeeze(-1), dim=-1))
+            # loss += var_loss
 
-            # self.log(f"{split}_loss_variance", var_loss, batch_size=out.size(0), sync_dist=True)
+            self.log(f"{split}_loss_variance", var_loss, batch_size=out.size(0), sync_dist=True)
 
-            # # --- COS SIM LOSS ----
-            # out_vars_normed = (out_vars.pow(2).sum(dim=-1) + 1e-6).sqrt()
-            # out_vars_normed = out_vars / out_vars_normed.unsqueeze(-1)
-            # out_vars_sim = out_vars_normed @ out_vars_normed.transpose(-1, -2) # similarity within classes, everything else is 0
-            # out_vars_sim_mask = var_hot.transpose(1, 2).unsqueeze(-1).to(dtype=torch.float32) @ var_hot.transpose(1, 2).unsqueeze(-2).to(dtype=torch.float32)
-            # var_loss = 1 - (out_vars_sim + (out_vars_sim_mask == 0))
-            # # loss += var_loss.mean()
+            # --- COS SIM LOSS ----
+            out_vars_normed = (out_vars.pow(2).sum(dim=-1) + 1e-6).sqrt()
+            out_vars_normed = out_vars / out_vars_normed.unsqueeze(-1)
+            out_vars_sim = out_vars_normed @ out_vars_normed.transpose(-1, -2) # similarity within classes, everything else is 0
+            out_vars_sim_mask = var_hot.transpose(1, 2).unsqueeze(-1).to(dtype=torch.float32) @ var_hot.transpose(1, 2).unsqueeze(-2).to(dtype=torch.float32)
+            var_loss = 1 - (out_vars_sim + (out_vars_sim_mask == 0))
+            # loss += var_loss.mean()
 
-            # self.log(f"{split}_loss_vars", var_loss.mean(), batch_size=out.size(0), sync_dist=True)
+            self.log(f"{split}_loss_vars", var_loss.mean(), batch_size=out.size(0), sync_dist=True)
 
-            # # --- Ortho loss for sim loss
-            # out_var_mean_normed = out_vars_normed.mean(dim=-2, keepdim=True)
+            # --- Ortho loss for sim loss
+            out_var_mean_normed = out_vars_normed.mean(dim=-2, keepdim=True)
 
-            # # Common component for ortho loss
-            # ortho_loss = out_var_mean_normed.squeeze(-2) @ out_var_mean_normed.squeeze(-2).transpose(-1, -2)
+            # Common component for ortho loss
+            ortho_loss = out_var_mean_normed.squeeze(-2) @ out_var_mean_normed.squeeze(-2).transpose(-1, -2)
 
-            # #mask diagonals out
-            # ortho_loss = torch.abs(ortho_loss) * (1 - torch.eye(ortho_loss.size(-1)).to(ortho_loss.device))
-            # # loss += ortho_loss.mean()
+            #mask diagonals out
+            ortho_loss = torch.abs(ortho_loss) * (1 - torch.eye(ortho_loss.size(-1)).to(ortho_loss.device))
+            # loss += ortho_loss.mean()
 
-            # self.log(f"{split}_loss_ortho", ortho_loss.mean(), batch_size=out.size(0), sync_dist=True)
+            self.log(f"{split}_loss_ortho", ortho_loss.mean(), batch_size=out.size(0), sync_dist=True)
 
-            # self.log(f"{split}_var_norm", torch.mean((out_vars.pow(2).sum(dim=-1) + 1e-6).sqrt()), sync_dist=True)
+            self.log(f"{split}_var_norm", torch.mean((out_vars.pow(2).sum(dim=-1) + 1e-6).sqrt()), sync_dist=True)
 
         self.log(f"{split}_loss", loss, batch_size=out.size(0), sync_dist=True, prog_bar=True) 
 
