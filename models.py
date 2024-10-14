@@ -590,7 +590,7 @@ def main(hparams=None, load_chckpnt=False, discrete=False, finetune=False, **kwa
         every_n_epochs=4,
         save_on_train_epoch_end=True)
     trainer = L.Trainer(max_epochs=200, callbacks=[checkpointing], log_every_n_steps=1, num_sanity_val_steps=0, logger=logger, default_root_dir=SAVE_DIR+"models/")
-    train_dataloader, val_dataloader = dataloader.data_init(kwargs["batch_size"], last=kwargs["bert_is_last"])
+    train_dataloader, val_dataloader, test_dataloader = dataloader.data_init(kwargs["batch_size"], last=kwargs["bert_is_last"])
     trainer.fit(model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
 
 
