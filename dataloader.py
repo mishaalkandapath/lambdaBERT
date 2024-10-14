@@ -8,6 +8,8 @@ import pandas as pd
 from tokenization import TOKENIZER, BERT_MODEL, create_out_tensor
 from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence
 
+import traceback
+
 #create a directory where the key is a csv. each row has first column as the raw text sentence, and the second col being the 
 # path to the file that stores all its lambda terms
 
@@ -633,7 +635,7 @@ SEP_TOKEN = [[[ 1.3052e+00, -8.8454e-01,  3.9420e+00,  2.9212e+00, -7.4760e-01,
 class ShuffledLambdaTermsDataset(Dataset):
     def __init__(self, input_sentences_file, main_dir, transform=None, target_transform=None, last=False):
         self.main_dir = main_dir
-        self.input_sentences = pd.read_csv(input_sentences_file)
+        self.input_sentences = pd.read_csv(input_sentences_file, nrows=72000)
         self.transform = transform
         self.target_transform = target_transform
         self.last = last
@@ -642,10 +644,8 @@ class ShuffledLambdaTermsDataset(Dataset):
         return len(self.input_sentences)
 
     def __getitem__(self, index):
-        sentence = self.input_sentences.iloc[index, 1]
-        if sentence[0] == '""': sentence = sentence[1]
-        if sentence[-1] == '""': sentence = sentence[:-1]
         path = self.input_sentences.iloc[index, 2]
+        if type(path) is not str: path = path.name
         path = DATA_PATH + path[len("lambdaBERT/data/"):]
         with open(path, 'r') as f:
             lambda_terms = f.readlines()[0].strip()
@@ -733,9 +733,5 @@ def data_init(batch_size, mode=0, last=False):
         return train_dataloader, val_dataloader
     else:
         #just one dataloader
-        train_dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=9, collate_fn=shuffled_collate)
+        train_dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=9, collate_fn=shuffled_collate)
         return train_dataloader
-
-
-
-            
