@@ -368,7 +368,8 @@ class DiscreteTransformerStack(L.LightningModule):
         with torch.no_grad():
             target_embs, in_embs, sent_pad_mask = target_embs.to(self.device), in_embs.to(self.device), sent_pad_mask.to(self.device)
             # var_index_mask_no = torch.roll(var_index_mask_no, -1, 1) # shift one back coz nps and _ have been moved to the back -- RETIRED: NOW DONE IN process_bert_lambda
-            out, classified_class, var_reg = self.model(target_embs[:, :-1, :], in_embs, sent_pad_mask, self.device)
+            seq_syntax = var_index_mask_no.type(torch.bool) + 2*lambda_index_mask.type(torch.bool) + 3*app_index_mask.type(torch.bool)
+            out, classified_class, var_reg = self.model(target_embs[:, :-1, :], seq_syntax[:, :-1], in_embs, sent_pad_mask, self.device)
             target = target_embs[:, 1:, :]
             target_tokens = target_tokens[:, 1:]
             
@@ -459,7 +460,8 @@ class DiscreteTransformerStack(L.LightningModule):
         class_criterion = nn.CrossEntropyLoss()
         (in_embs, target_embs, target_tokens, var_index_mask_no, lambda_index_mask, app_index_mask, pad_mask, sent_pad_mask) = batch
 
-        out, classified_class, var_reg = self.model(target_embs[:, :-1, :], in_embs, sent_pad_mask, self.device)
+        seq_syntax = var_index_mask_no.type(torch.bool) + 2*lambda_index_mask.type(torch.bool) + 3*app_index_mask.type(torch.bool)
+        out, classified_class, var_reg = self.model(target_embs[:, :-1, :], seq_syntax[:, :-1], in_embs, sent_pad_mask, self.device)
         target = target_embs[:, 1:, :]
         target_tokens = target_tokens[:, 1:]
 
