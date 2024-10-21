@@ -230,7 +230,7 @@ class ShuffledTransformerStack(L.LightningModule):
 
         with torch.no_grad():
             target_embs, in_embs, sent_pad_mask = target_embs.to(self.device), in_embs.to(self.device), sent_pad_mask.to(self.device)
-            # var_index_mask_no = torch.roll(var_index_mask_no, -1, 1) # shift one back coz nps and _ have been moved to the back -- RETIRED: NOW DONE IN process_bert_lambda
+
             seq_syntax = var_index_mask_no.type(torch.bool) + 2*lambda_index_mask.type(torch.bool) + 3*app_index_mask.type(torch.bool)
             out, classified_class, var_reg = self.model(target_embs[:, :-1, :], seq_syntax[:, :-1], in_embs, sent_pad_mask, self.device)
             target = target_embs[:, 1:, :]
@@ -478,10 +478,10 @@ class DiscreteTransformerStack(L.LightningModule):
         target_tokens = nn.functional.one_hot(target_tokens.long(), num_classes=self.linear[-1].out_features).to(dtype=torch.float32).to(self.device)
         
         token_out = self.linear(out.detach() if self.finetune else out)
-        loss = token_criterion((token_out[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | app_index_mask | pad_mask)]), target_tokens[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | app_index_mask | pad_mask)]).mean()
+        loss = token_criterion((token_out[~(var_index_mask_no.type(torch.bool) | pad_mask)]), target_tokens[~(var_index_mask_no.type(torch.bool) | pad_mask)]).mean()
         if not self.finetune: 
-            loss += criterion(out[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | app_index_mask | pad_mask)],
-                            target[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | app_index_mask | pad_mask)]).mean()
+            loss += criterion(out[~(var_index_mask_no.type(torch.bool) | pad_mask)],
+                            target[~(var_index_mask_no.type(torch.bool) | pad_mask)]).mean()
             
         self.log("train_loss_tokens", loss, batch_size=out.size(0), sync_dist=True)
         if out[lambda_index_mask].reshape(-1, out.size(-1)).shape[0] != 0 and not self.finetune:
