@@ -167,7 +167,7 @@ class TransformerDecoderStack(nn.Module):
         self.num_heads = num_heads
         self.initial_forward = nn.Linear(768, d_model)
         self.final_forward = nn.Linear(d_model, 768)
-        self.classifier_forward = nn.Linear(d_model, 4)
+        self.classifier_forward = nn.Linear(d_model, 5)
         self.reg_forward1 = nn.Linear(d_model, d_model)
         self.reg_forward2 = nn.Linear(d_model, 10)
         self.reg_act = nn.GELU()
@@ -225,7 +225,7 @@ class ShuffledTransformerStack(L.LightningModule):
     def validation_step(self, batch, batch_idx):
         criterion = nn.MSELoss()
         class_criterion = nn.CrossEntropyLoss()
-        in_embs, target_embs, _, var_index_mask_no, lambda_index_mask, app_index_mask, pad_mask, sent_pad_mask = batch
+        in_embs, target_embs, _, var_index_mask_no, lambda_index_mask, app_index_mask, stop_mask, pad_mask, sent_pad_mask = batch
         
 
         with torch.no_grad():
@@ -237,12 +237,12 @@ class ShuffledTransformerStack(L.LightningModule):
             
             #no mse for the pads, variables, lambda or anything else. jus tthe actual embeddings
             #offset the masks by one 
-            lambda_index_mask, app_index_mask, var_index_mask_no, pad_mask = (lambda_index_mask[:, 1:], app_index_mask[:, 1:], var_index_mask_no[:, 1:], pad_mask[:, 1:])
+            lambda_index_mask, app_index_mask, var_index_mask_no, stop_mask, pad_mask = (lambda_index_mask[:, 1:], app_index_mask[:, 1:], var_index_mask_no[:, 1:], stop_mask[:, 1:], pad_mask[:, 1:])
 
             return self.common_loss([criterion, class_criterion], [out, classified_class, var_reg], target,
-                               lambda_index_mask, app_index_mask, var_index_mask_no, pad_mask, split="valid")
+                               lambda_index_mask, app_index_mask, var_index_mask_no, stop_mask, pad_mask, split="valid")
 
-    def common_loss(self, criteria, out, target, lambda_index_mask, app_index_mask, var_index_mask_no, pad_mask, split="train"):
+    def common_loss(self, criteria, out, target, lambda_index_mask, app_index_mask, var_index_mask_no, stop_mask, pad_mask, split="train"):
         criterion, class_criterion = criteria
         
         out, classified_class, var_reg = out
@@ -259,8 +259,8 @@ class ShuffledTransformerStack(L.LightningModule):
         
         #mse on lambdas
         if out[lambda_index_mask].reshape(-1, out.size(-1)).shape[0] != 0:
-            gt_cls_mask = var_index_mask_no.type(torch.bool) + 2*lambda_index_mask.type(torch.bool) + 3*app_index_mask.type(torch.bool) #because lambda's class is 2
-            classifier_loss = class_criterion(classified_class.view(-1, 4), gt_cls_mask.view(-1))
+            gt_cls_mask = var_index_mask_no.type(torch.bool) + 2*lambda_index_mask.type(torch.bool) + 3*app_index_mask.type(torch.bool) + 4*stop_mask.type(torch.bool) #because lambda's class is 2
+            classifier_loss = class_criterion(classified_class.view(-1, 5), gt_cls_mask.view(-1))
             loss += classifier_loss
 
             self.log(f"{split}_loss_classifier", classifier_loss, batch_size=out.size(0), sync_dist=True)
@@ -311,7 +311,7 @@ class ShuffledTransformerStack(L.LightningModule):
         criterion = nn.MSELoss()
 
         class_criterion = nn.CrossEntropyLoss()
-        (in_embs, target_embs, _, var_index_mask_no, lambda_index_mask, app_index_mask, pad_mask, sent_pad_mask) = batch
+        (in_embs, target_embs, _, var_index_mask_no, lambda_index_mask, app_index_mask, stop_mask, pad_mask, sent_pad_mask) = batch
         
         out = target_embs[:, :-1, :]
         target = target_embs[:, 1:, :]
@@ -321,9 +321,9 @@ class ShuffledTransformerStack(L.LightningModule):
 
         #no mse for the pads, variables, lambda or anything else. jus tthe actual embeddings
         #offset the masks by one 
-        lambda_index_mask, app_index_mask, var_index_mask_no, pad_mask = (lambda_index_mask[:, 1:], app_index_mask[:, 1:], var_index_mask_no[:, 1:], pad_mask[:, 1:])
+        lambda_index_mask, app_index_mask, var_index_mask_no, stop_mask, pad_mask = (lambda_index_mask[:, 1:], app_index_mask[:, 1:], var_index_mask_no[:, 1:], stop_mask[:, 1:], pad_mask[:, 1:])
         loss = self.common_loss([criterion, class_criterion], [out, classified_class, var_reg], target,
-                               lambda_index_mask, app_index_mask, var_index_mask_no, pad_mask, split="train")
+                               lambda_index_mask, app_index_mask, var_index_mask_no, stop_mask, pad_mask, split="train")
 
         # roll out
         out, target = out[:, :-1, :], target[:, 1:, :]

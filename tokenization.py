@@ -732,9 +732,9 @@ def create_out_tensor(sentence, lambda_term):
     # words = t.tokenize(sentence)
     words = " ".join(sentence).replace("...}"," ...}").replace("{..","{. .").replace("NP.","NP .").replace("NP—","NP —").replace(",}"," ,}").\
     replace("'re"," 're").replace("'s"," 's").replace("'ve}"," 've}").replace("!}"," !}").replace("?}"," ?}").replace("n't"," n't").\
-    replace("'m}"," 'm}").replace("{. ..","{...").replace("{——}","{— —}").replace("{--—}","{- -—}").replace("St.", "St").split()
+    replace("'m}"," 'm}").replace("{. ..","{...").replace("{——}","{— —}").replace("{--—}","{- -—}").replace("St.", "St").strip().split()
     
-    words = [word[:-1].strip("\u200e") for i, word in enumerate(words) if i % 2 != 0] # -1 to get rid of the } at the end. sentences in PTB tokenized form with POS tagging - {Tag word}
+    words = [word[:-1].strip("\u200e") if word[-1] == "}" else word for i, word in enumerate(words) if i % 2 != 0] # -1 to get rid of the } at the end. sentences in PTB tokenized form with POS tagging - {Tag word}
 
     ind_letters = set()
 
@@ -794,10 +794,10 @@ def create_out_tensor(sentence, lambda_term):
     #ptb tokenize the lambda term 
     lambda_term_list = []
     acc = ""
-
+    # assert len(re.findall(r"<w_\d+>", lambda_term)) == 0, f"Invalid lambda term {lambda_term}\n{words}"
     weird_dots = re.findall(r"<w_\d+>", lambda_term)
     for i, dot in enumerate(weird_dots):
-        lambda_term = lambda_term.replace(dot, f"..._{i+10000}")
+        lambda_term = lambda_term.replace(dot, f"lamda_{i+10000}")
 
     for char in lambda_term:
         if char in "( )":
@@ -809,6 +809,7 @@ def create_out_tensor(sentence, lambda_term):
             acc += char
     if acc != "": lambda_term_list.append(acc)
     lambda_term_list = [w.replace("\u200e", "") for w in lambda_term_list]
+
     replace_copy = lambda_term_list.copy()
     term_to_word_index = {}
     #at this point we have replace copy like: ['(', '(', 'is_15', '(', 'an_16', '(', 'American_17', ...]
@@ -817,9 +818,10 @@ def create_out_tensor(sentence, lambda_term):
     var_logs = []
     lambda_pattern = re.compile(r"λ\w+_\d+\.")
     for i, element in enumerate(lambda_term_list):
-        if lambda_pattern.match(element)is not None:
+        if lambda_pattern.match(element) is not None:
             var_logs.append(element[1:-1])
 
+    words[3] = "lamda"
     for w, word in enumerate(words):
         #find if this constitutes an entity in the lambda term
         #entities are of the form words_dddd
@@ -831,7 +833,7 @@ def create_out_tensor(sentence, lambda_term):
         elif word == "}": word = "RCB"
 
         if "λ" in word: word = word.replace("λ", "")
-        if word not in lambda_term: continue
+        if word not in lambda_term and word != "lamda": continue
         #traverse the lambda_term 
         min_indx, min_no = 500000, 500000
         for i, term in enumerate(lambda_term_list):
@@ -840,7 +842,9 @@ def create_out_tensor(sentence, lambda_term):
                 if no < min_no:
                     min_no = no
                     min_indx = i
-        if min_indx == 500000: continue
+        if min_indx == 500000: 
+            if word != "": print("First instance Could not find a match for ", word)
+            continue
         #replace with something random
         lambda_term_list[min_indx] = replacement*len(word)
         term_to_word_index[min_indx] = w # index in the term to the index in the word list 
@@ -897,6 +901,13 @@ def create_out_tensor(sentence, lambda_term):
             lambda_term_tokens_temp.append(-1*(var_logs.index(element)+1))
         else:
             assert entity_pattern.match(element), "Invalid lambda term ?? " + element
+            try:
+                term_to_word_index[i]
+            except Exception:
+                print(lambda_term_list)
+                print(words)
+                print("Could not find a match for ", element, i)
+                raise Exception
             # print(f"masking {term_to_word_index[i]}", torch.tensor(word_mapping) == term_to_word_index[i])
             counts = torch.count_nonzero(torch.tensor(word_mapping) == term_to_word_index[i])
             lambda_term_embedding.extend(representations.squeeze(0)[torch.tensor(word_mapping) == term_to_word_index[i]])
@@ -948,7 +959,6 @@ if __name__ == "__main__":
 
     #choose 10 random indices from 0 to range(sentences)
     indices = random.sample(range(sentences), 10) #-- debugging
-
     for i in tqdm(range(sentences)):
     # for i in indices:
         # error here: i+9 + 56+75+477+25, i+9 + 56+75+477+26+128, i+9 + 56+75+477+26+129+278, i+9 + 56+75+477+26+129+279+111+724, i+9 + 56+75+477+26+129+279+111+725+482, i+9 + 56+75+477+26+129+279+111+725+483+6606+3757, i+9 + 56+75+477+26+129+279+111+725+483+6606+3757+157, i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5809, i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5809+4, i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5809+4+2113, i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5810+5+2114 + 2626,i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5810+5+2114 + 2626 + 1396,i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5810+5+2114+2627+1398+200, i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5810+5+2114+2627+1398+200+3440, +4453, +28,+10447, +5700
@@ -967,7 +977,7 @@ if __name__ == "__main__":
             #delete it
             os.remove(f"/w/150/lambda_squad/{df.iloc[i, 2][:-4]}.pt")
         torch.save((sent_emb, target_emb, target_emb_last, target_tokens, var_mask, lambda_mask, app_mask), f"/w/150/lambda_squad/{df.iloc[i, 2][:-4]}.pt")
-        
+    print((sentences))
     # for i in [67254, 57102, 40593, 43650]:
     #     gen_sent = eval(df.iloc[i, 1])
     #     words = " ".join(gen_sent).replace("...}"," ...}").replace("{..","{. .").replace("NP.","NP .").replace("NP—","NP —").replace(",}"," ,}").\

@@ -13,7 +13,7 @@ import traceback
 #create a directory where the key is a csv. each row has first column as the raw text sentence, and the second col being the 
 # path to the file that stores all its lambda terms
 
-DATA_PATH = "/home/mishaalk/projects/def-gpenn/mishaalk/lambdaBERT/data/"
+DATA_PATH = "/w/150/lambda_squad/lambdaBERT/data/"
 BOS_TOKEN_LAST = [[[ 6.6404e-03,  1.2032e-01, -2.5759e-02,  1.1922e-01,  1.6584e-01,
         -2.4184e-02,  4.3246e-02, -9.4100e-02,  4.8467e-02,  1.7669e-01,
         -7.7217e-02, -2.4837e-02, -1.4056e-01,  1.7926e-01, -6.4828e-01,
@@ -678,15 +678,17 @@ class ShuffledLambdaTermsDataset(Dataset):
         lambda_index_mask = [0] + lambda_index_mask + [0]
         var_index_mask_no = [0] + var_index_mask_no + [0]
         app_index_mask = [0] + app_index_mask + [0]
+        stop_index_mask = [0]*len(app_index_mask)
+        stop_index_mask[-1] = 1
 
         # print("insnide", TOKENIZER.convert_ids_to_tokens([101 if t <0 else t for t in target_tokens]))
         
-        return sent_embs, target_embs if not self.last else target_embs_last, target_tokens, lambda_index_mask, var_index_mask_no, app_index_mask
+        return sent_embs, target_embs if not self.last else target_embs_last, target_tokens, lambda_index_mask, var_index_mask_no, app_index_mask, stop_index_mask
 
 def shuffled_collate(batch):
-    sent_embedding, lambda_term_embedding, lambda_term_tokens, lambda_mask, var_mask, app_mask = zip(*batch)
+    sent_embedding, lambda_term_embedding, lambda_term_tokens, lambda_mask, var_mask, app_mask, stop_mask = zip(*batch)
     
-    sent_embedding, lambda_term_embedding, lambda_term_tokens, lambda_mask, var_mask, app_mask = [sent.squeeze(0) for sent in sent_embedding], [lambda_term.squeeze(0) for lambda_term in lambda_term_embedding], [torch.tensor(sent, dtype=torch.int64) for sent in lambda_term_tokens],[torch.tensor(sent, dtype=torch.bool).squeeze(0) for sent in lambda_mask], [torch.tensor(var, dtype=torch.int64).squeeze(0) for var in var_mask], [torch.tensor(app, dtype=torch.bool).squeeze(0) for app in app_mask]
+    sent_embedding, lambda_term_embedding, lambda_term_tokens, lambda_mask, var_mask, app_mask, stop_mask = [sent.squeeze(0) for sent in sent_embedding], [lambda_term.squeeze(0) for lambda_term in lambda_term_embedding], [torch.tensor(sent, dtype=torch.int64) for sent in lambda_term_tokens],[torch.tensor(sent, dtype=torch.bool).squeeze(0) for sent in lambda_mask], [torch.tensor(var, dtype=torch.int64).squeeze(0) for var in var_mask], [torch.tensor(app, dtype=torch.bool).squeeze(0) for app in app_mask], [torch.tensor(st, dtype=torch.bool).squeeze(0) for st in stop_mask]
     sent_embedding_batched = pad_sequence(sent_embedding, batch_first=True, padding_value = 15)
     
     lambda_term_embedding_batched = pad_sequence(lambda_term_embedding, batch_first=True, padding_value = 15)
@@ -694,6 +696,7 @@ def shuffled_collate(batch):
     var_mask_batched = pad_sequence(var_mask, batch_first=True, padding_value = 0)
     lambda_mask_batched = pad_sequence(lambda_mask, batch_first=True, padding_value = 0)
     app_mask_batched = pad_sequence(app_mask, batch_first=True, padding_value = 0)
+    stop_mask_batched = pad_sequence(stop_mask, batch_first=True, padding_value = 0)
 
     lambda_pad_mask = lambda_term_embedding_batched == 15
     lambda_term_embedding_batched = lambda_term_embedding_batched.masked_fill(lambda_pad_mask, 0)
@@ -703,7 +706,7 @@ def shuffled_collate(batch):
     sent_embedding_batched = sent_embedding_batched.masked_fill(sent_pad_mask, 0)
     sent_pad_mask = sent_pad_mask.sum(-1) >= 1 #similarly, anything thats a padded token position is 0
     # sent_pad_mask = sent_embedding_batched.sum(-1) >= 1
-    return sent_embedding_batched, lambda_term_embedding_batched, lambda_term_tokens_batched, var_mask_batched, lambda_mask_batched, app_mask_batched, lambda_pad_mask, sent_pad_mask
+    return sent_embedding_batched, lambda_term_embedding_batched, lambda_term_tokens_batched, var_mask_batched, lambda_mask_batched, app_mask_batched, stop_mask_batched, lambda_pad_mask, sent_pad_mask
 
 import numpy
 def seed_worker(worker_id):
