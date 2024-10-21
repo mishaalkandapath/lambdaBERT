@@ -432,7 +432,6 @@ if __name__ == "__main__":
             w_words.append(words)
 
         #parallelize
-        print(len(w_words))
         threads = []
         for i, words in enumerate(w_words):
             t = threading.Thread(target=parallelize_inference, args=(i, model, words))
@@ -450,10 +449,9 @@ if __name__ == "__main__":
         thread_locked_dict = ThreadLockDict()
 
         if r_line % 90 == 0:
-            print("wrote")
             out_file_csv.writerows(write_lines)
             out_file.flush()
-            os.fsync()
+            os.fsync(out_file)
             write_lines = []    
 
 
