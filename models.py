@@ -230,7 +230,7 @@ class ShuffledTransformerStack(L.LightningModule):
 
         with torch.no_grad():
             target_embs, in_embs, sent_pad_mask = target_embs.to(self.device), in_embs.to(self.device), sent_pad_mask.to(self.device)
-            # var_index_mask_no = torch.roll(var_index_mask_no, -1, 1) # shift one back coz nps and _ have been moved to the back -- RETIRED: NOW DONE IN process_bert_lambda
+
             seq_syntax = var_index_mask_no.type(torch.bool) + 2*lambda_index_mask.type(torch.bool) + 3*app_index_mask.type(torch.bool)
             out, classified_class, var_reg = self.model(target_embs[:, :-1, :], seq_syntax[:, :-1], in_embs, sent_pad_mask, self.device)
             target = target_embs[:, 1:, :]
@@ -248,8 +248,10 @@ class ShuffledTransformerStack(L.LightningModule):
         out, classified_class, var_reg = out
 
         assert len(torch.unique(lambda_index_mask + var_index_mask_no.type(torch.bool) + app_index_mask + pad_mask)) == 2, torch.unique(lambda_index_mask + var_index_mask_no.type(torch.bool) + app_index_mask + pad_mask)
-        loss = criterion(out[~(var_index_mask_no.type(torch.bool) | pad_mask)],
-                        target[~(var_index_mask_no.type(torch.bool) | pad_mask)])
+        loss = criterion(out[~(var_index_mask_no.type(torch.bool) | stop_mask | pad_mask)],
+                        target[~(var_index_mask_no.type(torch.bool) | stop_mask | pad_mask)])
+        
+        loss += stop_mask.shape[1]/10 * criterion(out[stop_mask], target[stop_mask]) # weight the stop by a tenth of the length times?
         normed_vector = lambda x : x/torch.linalg.vector_norm(x, dim=-1, ord=2, keepdim=True)
         normed_loss = criterion(normed_vector(out[~(var_index_mask_no.type(torch.bool) | pad_mask)]), 
                                               normed_vector(target[~(var_index_mask_no.type(torch.bool) | pad_mask)]))
@@ -362,7 +364,7 @@ class DiscreteTransformerStack(L.LightningModule):
         criterion = nn.MSELoss()
         token_criterion = nn.CrossEntropyLoss()
         class_criterion = nn.CrossEntropyLoss()
-        in_embs, target_embs, target_tokens, var_index_mask_no, lambda_index_mask, app_index_mask, pad_mask, sent_pad_mask = batch
+        in_embs, target_embs, target_tokens, var_index_mask_no, lambda_index_mask, app_index_mask, stop_mask, pad_mask, sent_pad_mask = batch
         
 
         with torch.no_grad():
@@ -375,13 +377,13 @@ class DiscreteTransformerStack(L.LightningModule):
             
             #no mse for the pads, variables, lambda or anything else. jus tthe actual embeddings
             #offset the masks by one 
-            lambda_index_mask, app_index_mask, var_index_mask_no, pad_mask = (lambda_index_mask[:, 1:], app_index_mask[:, 1:], var_index_mask_no[:, 1:], pad_mask[:, 1:])
+            lambda_index_mask, app_index_mask, var_index_mask_no, stop_mask, pad_mask = (lambda_index_mask[:, 1:], app_index_mask[:, 1:], var_index_mask_no[:, 1:], stop_mask[:, 1:], pad_mask[:, 1:])
 
             target_tokens = target_tokens.to(self.device)
             target_tokens[target_tokens == -1] = 0
             target_tokens = nn.functional.one_hot(target_tokens.long(), num_classes=self.linear[-1].out_features).to(dtype=torch.float32).to(self.device)
             token_out = self.linear(out.detach() if self.finetune else out)
-            loss = token_criterion(token_out[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | app_index_mask | pad_mask)], target_tokens[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | app_index_mask | pad_mask)]).mean()
+            loss = token_criterion(token_out[~(var_index_mask_no.type(torch.bool) | pad_mask)], target_tokens[~(var_index_mask_no.type(torch.bool) | pad_mask)]).mean()
             if not self.finetune: loss += criterion(out[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | app_index_mask | pad_mask)],
                             target[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | app_index_mask | pad_mask)]).mean()
             
@@ -458,7 +460,7 @@ class DiscreteTransformerStack(L.LightningModule):
         if self.finetune: self.model.eval()
 
         class_criterion = nn.CrossEntropyLoss()
-        (in_embs, target_embs, target_tokens, var_index_mask_no, lambda_index_mask, app_index_mask, pad_mask, sent_pad_mask) = batch
+        (in_embs, target_embs, target_tokens, var_index_mask_no, lambda_index_mask, app_index_mask, stop_mask, pad_mask, sent_pad_mask) = batch
 
         seq_syntax = var_index_mask_no.type(torch.bool) + 2*lambda_index_mask.type(torch.bool) + 3*app_index_mask.type(torch.bool)
         out, classified_class, var_reg = self.model(target_embs[:, :-1, :], seq_syntax[:, :-1], in_embs, sent_pad_mask, self.device)
@@ -467,7 +469,7 @@ class DiscreteTransformerStack(L.LightningModule):
 
         #no mse for the pads, variables, lambda or anything else. jus tthe actual embeddings
         #offset the masks by one 
-        lambda_index_mask, app_index_mask, var_index_mask_no, pad_mask = (lambda_index_mask[:, 1:], app_index_mask[:, 1:], var_index_mask_no[:, 1:], pad_mask[:, 1:])
+        lambda_index_mask, app_index_mask, var_index_mask_no, stop_mask, pad_mask = (lambda_index_mask[:, 1:], app_index_mask[:, 1:], var_index_mask_no[:, 1:], stop_mask[:,1:], pad_mask[:, 1:])
 
         assert len(torch.unique(lambda_index_mask + var_index_mask_no.type(torch.bool) + app_index_mask + pad_mask)) == 2, torch.unique(lambda_index_mask + var_index_mask_no.type(torch.bool) + app_index_mask + pad_mask)
         # loss = criterion(out[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | app_index_mask | pad_mask)],
@@ -478,10 +480,11 @@ class DiscreteTransformerStack(L.LightningModule):
         target_tokens = nn.functional.one_hot(target_tokens.long(), num_classes=self.linear[-1].out_features).to(dtype=torch.float32).to(self.device)
         
         token_out = self.linear(out.detach() if self.finetune else out)
-        loss = token_criterion((token_out[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | app_index_mask | pad_mask)]), target_tokens[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | app_index_mask | pad_mask)]).mean()
+        loss = token_criterion((token_out[~(var_index_mask_no.type(torch.bool) | pad_mask)]), target_tokens[~(var_index_mask_no.type(torch.bool) | pad_mask)]).mean()
+        
         if not self.finetune: 
-            loss += criterion(out[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | app_index_mask | pad_mask)],
-                            target[~(lambda_index_mask | var_index_mask_no.type(torch.bool) | app_index_mask | pad_mask)]).mean()
+            loss += criterion(out[~(var_index_mask_no.type(torch.bool) | pad_mask)],
+                            target[~(var_index_mask_no.type(torch.bool) | pad_mask)]).mean()
             
         self.log("train_loss_tokens", loss, batch_size=out.size(0), sync_dist=True)
         if out[lambda_index_mask].reshape(-1, out.size(-1)).shape[0] != 0 and not self.finetune:
@@ -581,6 +584,10 @@ def main(hparams=None, load_chckpnt=False, discrete=False, finetune=False, **kwa
     else: model = TransformerDecoderStack(4, 384, 8, 3072, custom=kwargs["custom_t"])
     if discrete: 
         model = DiscreteTransformerStack(model, finetune=finetune, bert_lm=kwargs["bert_lm"])
+        if kwargs["model_is_discrete"]:
+            checkpoint = torch.load(args.model_path)
+            linear_weights = {k.replace("linear.", ""): v for k, v in checkpoint["state_dict"].items() if k.startswith("linear.")}
+            model.linear.load_state_dict(linear_weights)
     else: 
         wrapper = ShuffledTransformerStack
         model = wrapper(model, t_force = kwargs["t_force"], t_damp=kwargs["t_damp"])
@@ -616,12 +623,16 @@ if __name__ == "__main__":
     parser.add_argument("--custom_transformer", action="store_true")
     parser.add_argument("--bert_is_last", action="store_true")
     parser.add_argument("--bert_lm", action="store_true")
+    parser.add_argument("--model_is_discrete", action="store_true")
 
 
     args = parser.parse_args()
     SAVE_DIR = args.save_dir
     torch.manual_seed(0)
-    main(load_chckpnt=args.model_path, discrete=args.discrete, finetune=args.finetune_discrete, t_force=args.t_force, t_damp=args.t_damp, batch_size=args.batch_size, custom_t=args.custom_transformer, bert_is_last=args.bert_is_last, bert_lm=args.bert_lm)
+    assert (args.model_is_discrete and args.model_path) or (args.model_path), "model path for discrete model to be provided"
+    main(load_chckpnt=args.model_path, discrete=args.discrete, finetune=args.finetune_discrete,
+          t_force=args.t_force, t_damp=args.t_damp, batch_size=args.batch_size, custom_t=args.custom_transformer,
+            bert_is_last=args.bert_is_last, bert_lm=args.bert_lm, model_is_discrete=args.model_is_discrete)
 
 
     # model = TransformerDecoderStack(6, 384, 12, 3072)
