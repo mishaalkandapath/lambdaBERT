@@ -54,7 +54,7 @@ thread_locked_dict = ThreadLockDict()
 def model_inference(model, dataloader):
     global DEVICE
     model.eval()
-    confusion_matrix = torch.zeros(4, 4)
+    confusion_matrix = torch.zeros(5, 5)
     average_loss = 0
     count = 0
     outs = []
@@ -63,18 +63,18 @@ def model_inference(model, dataloader):
         #prpgress bar
         pbar = tqdm.tqdm(total=len(dataloader))
         for k, batch in enumerate(dataloader):
-            (in_embs, target_embs, target_tokens, var_index_mask_no, lambda_index_mask, app_index_mask, pad_mask, sent_pad_mask) = batch
+            (in_embs, target_embs, target_tokens, var_index_mask_no, lambda_index_mask, app_index_mask, stop_mask, pad_mask, sent_pad_mask) = batch
             #move to device
-            in_embs, target_embs, target_tokens, var_index_mask_no, lambda_index_mask, app_index_mask, pad_mask, sent_pad_mask = in_embs.to(DEVICE), target_embs.to(DEVICE), target_tokens.to(DEVICE), var_index_mask_no.to(DEVICE), lambda_index_mask.to(DEVICE), app_index_mask.to(DEVICE), pad_mask.to(DEVICE), sent_pad_mask.to(DEVICE)
+            in_embs, target_embs, target_tokens, var_index_mask_no, lambda_index_mask, app_index_mask, stop_mask, pad_mask, sent_pad_mask = in_embs.to(DEVICE), target_embs.to(DEVICE), target_tokens.to(DEVICE), var_index_mask_no.to(DEVICE), lambda_index_mask.to(DEVICE), app_index_mask.to(DEVICE), pad_mask.to(DEVICE), sent_pad_mask.to(DEVICE)
             
-            seq_syntax = var_index_mask_no.type(torch.bool) + 2*lambda_index_mask.type(torch.bool) + 3*app_index_mask.type(torch.bool)
+            seq_syntax = var_index_mask_no.type(torch.bool) + 2*lambda_index_mask.type(torch.bool) + 3*app_index_mask.type(torch.bool) 
             out, classified_class, var_reg = model(target_embs[:, :-1, :], seq_syntax[:, :-1],in_embs, sent_pad_mask) # get_discrete_output(in_embs, model, target_tokens.shape[1])
             target = target_embs[:, 1:, :]
-            lambda_index_mask, app_index_mask, var_index_mask_no, pad_mask = (lambda_index_mask[:, 1:], app_index_mask[:, 1:], var_index_mask_no[:, 1:], pad_mask[:, 1:])
+            lambda_index_mask, app_index_mask, var_index_mask_no, stop_mask, pad_mask = (lambda_index_mask[:, 1:], app_index_mask[:, 1:], var_index_mask_no[:, 1:], stop_mask[:, 1:], pad_mask[:, 1:])
         
             #classiifer truth
-            gt_cls_mask = var_index_mask_no.type(torch.bool) + 2*lambda_index_mask.type(torch.bool) + 3*app_index_mask.type(torch.bool) #because lambda's class is 2
-            loss = nn.functional.cross_entropy(classified_class.view(-1, 4), gt_cls_mask.view(-1), reduction="none")
+            gt_cls_mask = var_index_mask_no.type(torch.bool) + 2*lambda_index_mask.type(torch.bool) + 3*app_index_mask.type(torch.bool) + 4*stop_mask.type(torch.bool) #because lambda's class is 2
+            loss = nn.functional.cross_entropy(classified_class.view(-1, 5), gt_cls_mask.view(-1), reduction="none")
             loss = ((loss) * (0.95 ** (torch.arange(loss.shape[0])).to(gt_cls_mask.device))).mean()
             average_loss += loss.item()
             count += 1
@@ -401,58 +401,58 @@ if __name__ == "__main__":
 
 
     #-- CONFUSION MATRIX --
-    # confusion_matrix = model_inference(model, dataloader)
-    # plot_confusion_matrix(confusion_matrix)
+    confusion_matrix = model_inference(model, dataloader)
+    plot_confusion_matrix(confusion_matrix)
 
-    # confusion_matrix = model_inference(model, valid_dataloader)
-    # plot_confusion_matrix(confusion_matrix, "valid")
+    confusion_matrix = model_inference(model, valid_dataloader)
+    plot_confusion_matrix(confusion_matrix, "valid")
 
-    # confusion_matrix = model_inference(model, test_dataloader)
-    # plot_confusion_matrix(confusion_matrix, "test")
+    confusion_matrix = model_inference(model, test_dataloader)
+    plot_confusion_matrix(confusion_matrix, "test")
 
     # --DISCRETE OUTPUT SAMPLES
-    lines = pd.read_csv("data/input_sentences.csv", header=None)
-    out_file = open("data/output_samples.csv", "a")
-    out_file_csv = csv.writer(out_file)
+    # lines = pd.read_csv("data/input_sentences.csv", header=None)
+    # out_file = open("data/output_samples.csv", "a")
+    # out_file_csv = csv.writer(out_file)
 
-    # rand_lines = random.choices(range(len(lines)))
-    write_lines = []
-    for r_line in tqdm.tqdm(range(0, len(lines), 15)):
-        w_words = []
-        for rand_line in range(r_line, min(r_line+15, len(lines))):
-            line = eval(lines.iloc[rand_line, 1])
-            target_path = lines.iloc[rand_line, 2][11:]
-            target_text = open(target_path, "r").readlines()[0]
-            words = " ".join(line).replace("...}"," ...}").replace("{..","{. .").replace("NP.","NP .").replace("NP—","NP —").replace(",}"," ,}").\
-                replace("'re"," 're").replace("'s"," 's").replace("'ve}"," 've}").replace("!}"," !}").replace("?}"," ?}").replace("n't"," n't").\
-                replace("'m}"," 'm}").replace("{. ..","{...").replace("{——}","{— —}").replace("{--—}","{- -—}").replace("St.", "St").split()
-            words = [word[:-1] for i, word in enumerate(words) if i % 2 != 0]
-            words = " ".join(words)
+    # # rand_lines = random.choices(range(len(lines)))
+    # write_lines = []
+    # for r_line in tqdm.tqdm(range(0, len(lines), 15)):
+    #     w_words = []
+    #     for rand_line in range(r_line, min(r_line+15, len(lines))):
+    #         line = eval(lines.iloc[rand_line, 1])
+    #         target_path = lines.iloc[rand_line, 2][11:]
+    #         target_text = open(target_path, "r").readlines()[0]
+    #         words = " ".join(line).replace("...}"," ...}").replace("{..","{. .").replace("NP.","NP .").replace("NP—","NP —").replace(",}"," ,}").\
+    #             replace("'re"," 're").replace("'s"," 's").replace("'ve}"," 've}").replace("!}"," !}").replace("?}"," ?}").replace("n't"," n't").\
+    #             replace("'m}"," 'm}").replace("{. ..","{...").replace("{——}","{— —}").replace("{--—}","{- -—}").replace("St.", "St").split()
+    #         words = [word[:-1] for i, word in enumerate(words) if i % 2 != 0]
+    #         words = " ".join(words)
         
-            w_words.append(words)
+    #         w_words.append(words)
 
-        #parallelize
-        threads = []
-        for i, words in enumerate(w_words):
-            t = threading.Thread(target=parallelize_inference, args=(i, model, words))
-            threads.append(t)
-            t.start()
+    #     #parallelize
+    #     threads = []
+    #     for i, words in enumerate(w_words):
+    #         t = threading.Thread(target=parallelize_inference, args=(i, model, words))
+    #         threads.append(t)
+    #         t.start()
         
-        for t in threads:
-            t.join()
+    #     for t in threads:
+    #         t.join()
         
-        for i in range(len(w_words)):
-            write_lines.append([w_words[i], thread_locked_dict[i]])
+    #     for i in range(len(w_words)):
+    #         write_lines.append([w_words[i], thread_locked_dict[i]])
         
-        #clear thread_locked dict:
-        w_words = []
-        thread_locked_dict = ThreadLockDict()
+    #     #clear thread_locked dict:
+    #     w_words = []
+    #     thread_locked_dict = ThreadLockDict()
 
-        if r_line % 90 == 0:
-            out_file_csv.writerows(write_lines)
-            out_file.flush()
-            os.fsync(out_file)
-            write_lines = []    
+    #     if r_line % 90 == 0:
+    #         out_file_csv.writerows(write_lines)
+    #         out_file.flush()
+    #         os.fsync(out_file)
+    #         write_lines = []    
 
 
 
