@@ -692,15 +692,18 @@ def shuffled_collate(batch):
     sent_embedding_batched = pad_sequence(sent_embedding, batch_first=True, padding_value = 15)
     
     lambda_term_embedding_batched = pad_sequence(lambda_term_embedding, batch_first=True, padding_value = 15)
-    lambda_term_tokens_batched = pad_sequence(lambda_term_tokens, batch_first=True, padding_value = 0)
+    lambda_term_tokens_batched = pad_sequence(lambda_term_tokens, batch_first=True, padding_value = 102) # all pads are stops
     var_mask_batched = pad_sequence(var_mask, batch_first=True, padding_value = 0)
     lambda_mask_batched = pad_sequence(lambda_mask, batch_first=True, padding_value = 0)
     app_mask_batched = pad_sequence(app_mask, batch_first=True, padding_value = 0)
-    stop_mask_batched = pad_sequence(stop_mask, batch_first=True, padding_value = 0)
+    stop_mask_batched = pad_sequence(stop_mask, batch_first=True, padding_value = 1) # all pads are stops
 
     lambda_pad_mask = lambda_term_embedding_batched == 15
     lambda_term_embedding_batched = lambda_term_embedding_batched.masked_fill(lambda_pad_mask, 0)
     lambda_pad_mask = lambda_pad_mask.sum(-1) >= 1 #so anything thats a padded token position is 0
+
+    #make all the pad embeddings be the sep token embeddings
+    lambda_term_embedding_batched[lambda_pad_mask] = torch.tensor(SEP_TOKEN_LAST).reshape(1, -1)
 
     sent_pad_mask = sent_embedding_batched == 15
     sent_embedding_batched = sent_embedding_batched.masked_fill(sent_pad_mask, 0)

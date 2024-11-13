@@ -224,6 +224,7 @@ class ShuffledTransformerStack(L.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         criterion = nn.MSELoss()
+        # class_criterion = nn.CrossEntropyLoss(weight=torch.tensor([1,1,1,1,8]).to(self.device).to(dtype=torch.float))
         class_criterion = nn.CrossEntropyLoss()
         in_embs, target_embs, _, var_index_mask_no, lambda_index_mask, app_index_mask, stop_mask, pad_mask, sent_pad_mask = batch
         
@@ -248,13 +249,13 @@ class ShuffledTransformerStack(L.LightningModule):
         out, classified_class, var_reg = out
 
         assert len(torch.unique(lambda_index_mask + var_index_mask_no.type(torch.bool) + app_index_mask + pad_mask)) == 2, torch.unique(lambda_index_mask + var_index_mask_no.type(torch.bool) + app_index_mask + pad_mask)
-        loss = criterion(out[~(var_index_mask_no.type(torch.bool) | stop_mask | pad_mask)],
-                        target[~(var_index_mask_no.type(torch.bool) | stop_mask | pad_mask)])
+        loss = criterion(out[~(var_index_mask_no.type(torch.bool))],
+                        target[~(var_index_mask_no.type(torch.bool))]) # use pads because pads are stops
         
-        loss += stop_mask.shape[1]/10 * criterion(out[stop_mask], target[stop_mask]) # weight the stop by a tenth of the length times?
+        # loss += stop_mask.shape[1]/10 * criterion(out[stop_mask], target[stop_mask]) # weight the stop by a tenth of the length times?
         normed_vector = lambda x : x/torch.linalg.vector_norm(x, dim=-1, ord=2, keepdim=True)
-        normed_loss = criterion(normed_vector(out[~(var_index_mask_no.type(torch.bool) | pad_mask)]), 
-                                              normed_vector(target[~(var_index_mask_no.type(torch.bool) | pad_mask)]))
+        normed_loss = criterion(normed_vector(out[~(var_index_mask_no.type(torch.bool))]), 
+                                              normed_vector(target[~(var_index_mask_no.type(torch.bool))]))
 
         self.log(f"{split}_loss_tokens", loss, batch_size=out.size(0), sync_dist=True) 
         self.log(f"{split}_loss_normed_tokens", normed_loss, batch_size=out.size(0), sync_dist=True)
@@ -312,7 +313,7 @@ class ShuffledTransformerStack(L.LightningModule):
     def training_step(self, batch, batch_idx):
         criterion = nn.MSELoss()
 
-        class_criterion = nn.CrossEntropyLoss()
+        class_criterion = nn.CrossEntropyLoss(weight=torch.tensor([1,1,1,1,8]).to(self.device).to(dtype=torch.float))
         (in_embs, target_embs, _, var_index_mask_no, lambda_index_mask, app_index_mask, stop_mask, pad_mask, sent_pad_mask) = batch
         
         out = target_embs[:, :-1, :]
@@ -629,7 +630,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     SAVE_DIR = args.save_dir
     torch.manual_seed(0)
-    assert (args.model_is_discrete and args.model_path) or (args.model_path), "model path for discrete model to be provided"
+    assert (args.model_is_discrete and args.model_path) or (args.model_path) or not (args.model_is_discrete or args.model_path), "model path for discrete model to be provided"
     main(load_chckpnt=args.model_path, discrete=args.discrete, finetune=args.finetune_discrete,
           t_force=args.t_force, t_damp=args.t_damp, batch_size=args.batch_size, custom_t=args.custom_transformer,
             bert_is_last=args.bert_is_last, bert_lm=args.bert_lm, model_is_discrete=args.model_is_discrete)

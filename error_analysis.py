@@ -453,7 +453,3 @@ if __name__ == "__main__":
             out_file.flush()
             os.fsync(out_file)
             write_lines = []    
-
-
-
-
