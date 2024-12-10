@@ -3,7 +3,7 @@ import torch
 import re
 from collections import defaultdict
 import random
-
+import seaborn as sns
 TOKENIZER = BertTokenizerFast.from_pretrained("bert-base-multilingual-cased") #("bert-base-uncased")
 
 BERT_MODEL = BertModel.from_pretrained("bert-base-multilingual-cased", output_hidden_states=True)
@@ -717,6 +717,56 @@ def process_bert_lambda(tokenized_sents, lambda_index_mask, app_index_mask, var_
 
     return embs, lambda_index_mask, app_index_mask, var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask
 
+def parse_lambda_term(lambda_term):
+    lambda_term_list = []
+    acc = ""
+    # assert len(re.findall(r"<w_\d+>", lambda_term)) == 0, f"Invalid lambda term {lambda_term}\n{words}"
+    weird_dots = re.findall(r"<w_\d+>", lambda_term)
+    for i, dot in enumerate(weird_dots):
+        lambda_term = lambda_term.replace(dot, f"lamda_{i+10000}")
+
+    for char in lambda_term:
+        if char in "( )":
+            if acc != "":
+                lambda_term_list.append(acc)
+                acc = ""
+            if char != " ": lambda_term_list.append(char)
+        else: 
+            acc += char
+    if acc != "": lambda_term_list.append(acc)
+    lambda_term_list = [w.replace("\u200e", "") for w in lambda_term_list]
+
+    return lambda_term_list
+
+def plot_variable_order_distribution(lambda_terms, save_as=""):
+    orders = []
+    var_patterns = re.compile(r"λ*S_\d+\.*|λ*NP_\d+\.*|λ*N_\d+\.*|λ*PP_\d+\.*")
+    for lambda_term in tqdm(lambda_terms):
+        lambda_term_list = parse_lambda_term(lambda_term)
+        var_counts = defaultdict(int)
+        for i, element in enumerate(lambda_term_list):
+            if var_patterns.match(element):
+                if "λ" in element: element = element[1:-1]
+                var_counts[element] += 1
+        orders.extend([v-1 for v in var_counts.values()]) # remove the 1 for declaration
+
+    #plot histogram:
+    if not save_as: return orders
+    # Create histogram using seaborn for better default styling
+    plt.figure(figsize=(10, 6))
+    sns.histplot(orders, bins=30, kde=True)
+    
+    # Add labels and title
+    plt.xlabel('Variable use counts')
+    plt.ylabel('Number of variables')
+    plt.title('Linearity?')
+    
+    # Add grid for better readability
+    plt.grid(True, alpha=0.3)
+    
+    plt.savefig(save_as)
+
+
 def create_out_tensor(sentence, lambda_term):
     # group the offsets into a word dictionary
     # for example {(0, 8): [(0, 2), (2, 6), (6, 8)]}
@@ -952,6 +1002,7 @@ if __name__ == "__main__":
     import pandas as pd
     import os
     from tqdm import tqdm
+    import matplotlib.pyplot as plt
     df = pd.read_csv("data/input_sentences.csv", header=None)
     sentences = len(df)     
 
@@ -959,6 +1010,7 @@ if __name__ == "__main__":
 
     #choose 10 random indices from 0 to range(sentences)
     indices = random.sample(range(sentences), 10) #-- debugging
+    terms =[]
     for i in tqdm(range(sentences)):
     # for i in indices:
         # error here: i+9 + 56+75+477+25, i+9 + 56+75+477+26+128, i+9 + 56+75+477+26+129+278, i+9 + 56+75+477+26+129+279+111+724, i+9 + 56+75+477+26+129+279+111+725+482, i+9 + 56+75+477+26+129+279+111+725+483+6606+3757, i+9 + 56+75+477+26+129+279+111+725+483+6606+3757+157, i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5809, i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5809+4, i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5809+4+2113, i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5810+5+2114 + 2626,i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5810+5+2114 + 2626 + 1396,i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5810+5+2114+2627+1398+200, i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5810+5+2114+2627+1398+200+3440, +4453, +28,+10447, +5700
@@ -978,6 +1030,7 @@ if __name__ == "__main__":
             os.remove(f"/w/150/lambda_squad/{df.iloc[i, 2][:-4]}.pt")
         torch.save((sent_emb, target_emb, target_emb_last, target_tokens, var_mask, lambda_mask, app_mask), f"/w/150/lambda_squad/{df.iloc[i, 2][:-4]}.pt")
     print((sentences))
+
     # for i in [67254, 57102, 40593, 43650]:
     #     gen_sent = eval(df.iloc[i, 1])
     #     words = " ".join(gen_sent).replace("...}"," ...}").replace("{..","{. .").replace("NP.","NP .").replace("NP—","NP —").replace(",}"," ,}").\

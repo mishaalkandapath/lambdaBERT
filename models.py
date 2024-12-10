@@ -167,7 +167,7 @@ class TransformerDecoderStack(nn.Module):
         self.num_heads = num_heads
         self.initial_forward = nn.Linear(768, d_model)
         self.final_forward = nn.Linear(d_model, 768)
-        self.classifier_forward = nn.Linear(d_model, 5)
+        self.classifier_forward = nn.Linear(d_model, 4)
         self.reg_forward1 = nn.Linear(d_model, d_model)
         self.reg_forward2 = nn.Linear(d_model, 10)
         self.reg_act = nn.GELU()
