@@ -19,6 +19,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from tqdm import tqdm
 import argparse
 import copy, math
+import time
 
 from tokenization import TOKENIZER, BERT_MODEL
 from transformers import BertConfig, BertForMaskedLM
@@ -167,7 +168,7 @@ class TransformerDecoderStack(nn.Module):
         self.num_heads = num_heads
         self.initial_forward = nn.Linear(768, d_model)
         self.final_forward = nn.Linear(d_model, 768)
-        self.classifier_forward = nn.Linear(d_model, 5)
+        self.classifier_forward = nn.Linear(d_model, 4)
         self.reg_forward1 = nn.Linear(d_model, d_model)
         self.reg_forward2 = nn.Linear(d_model, 10)
         self.reg_act = nn.GELU()
@@ -241,37 +242,41 @@ class ShuffledTransformerStack(L.LightningModule):
             lambda_index_mask, app_index_mask, var_index_mask_no, stop_mask, pad_mask = (lambda_index_mask[:, 1:], app_index_mask[:, 1:], var_index_mask_no[:, 1:], stop_mask[:, 1:], pad_mask[:, 1:])
 
             return self.common_loss([criterion, class_criterion], [out, classified_class, var_reg], target,
-                               lambda_index_mask, app_index_mask, var_index_mask_no, stop_mask, pad_mask, split="valid")
+                               lambda_index_mask, app_index_mask, var_index_mask_no, stop_mask, pad_mask, split="valid", 
+                               bos=target_embs[:, :1, :], in_embs=in_embs, sent_pad_mask=sent_pad_mask)
 
-    def common_loss(self, criteria, out, target, lambda_index_mask, app_index_mask, var_index_mask_no, stop_mask, pad_mask, split="train"):
+    def common_loss(self, criteria, out, target, lambda_index_mask, app_index_mask, var_index_mask_no, stop_mask, pad_mask, split="train",
+                     bos=None, in_embs=None, sent_pad_mask=None):
         criterion, class_criterion = criteria
         
         out, classified_class, var_reg = out
 
         assert len(torch.unique(lambda_index_mask + var_index_mask_no.type(torch.bool) + app_index_mask + pad_mask)) == 2, torch.unique(lambda_index_mask + var_index_mask_no.type(torch.bool) + app_index_mask + pad_mask)
-        loss = criterion(out[~(var_index_mask_no.type(torch.bool))],
-                        target[~(var_index_mask_no.type(torch.bool))]) # use pads because pads are stops
+        loss = criterion(out[~(var_index_mask_no.type(torch.bool) | pad_mask)],
+                        target[~(var_index_mask_no.type(torch.bool) | pad_mask)]) # use pads because pads are stops
         
         # loss += stop_mask.shape[1]/10 * criterion(out[stop_mask], target[stop_mask]) # weight the stop by a tenth of the length times?
         normed_vector = lambda x : x/torch.linalg.vector_norm(x, dim=-1, ord=2, keepdim=True)
-        normed_loss = criterion(normed_vector(out[~(var_index_mask_no.type(torch.bool))]), 
-                                              normed_vector(target[~(var_index_mask_no.type(torch.bool))]))
+        normed_loss = criterion(normed_vector(out[~(var_index_mask_no.type(torch.bool) | pad_mask)]), 
+                                              normed_vector(target[~(var_index_mask_no.type(torch.bool) | pad_mask)]))
 
         self.log(f"{split}_loss_tokens", loss, batch_size=out.size(0), sync_dist=True) 
         self.log(f"{split}_loss_normed_tokens", normed_loss, batch_size=out.size(0), sync_dist=True)
         
         #mse on lambdas
         if out[lambda_index_mask].reshape(-1, out.size(-1)).shape[0] != 0:
-            gt_cls_mask = var_index_mask_no.type(torch.bool) + 2*lambda_index_mask.type(torch.bool) + 3*app_index_mask.type(torch.bool) + 4*stop_mask.type(torch.bool) #because lambda's class is 2
-            classifier_loss = class_criterion(classified_class.view(-1, 5), gt_cls_mask.view(-1))
+            print("tf " ,F.softmax(classified_class, dim=-1)[0, :20])
+            gt_cls_mask = var_index_mask_no.type(torch.bool) + 2*lambda_index_mask.type(torch.bool) + 3*app_index_mask.type(torch.bool) #+ 4*stop_mask.type(torch.bool) #because lambda's class is 2
+            classifier_loss = class_criterion(classified_class.view(-1, 4), gt_cls_mask.view(-1))
             loss += classifier_loss
 
             self.log(f"{split}_loss_classifier", classifier_loss, batch_size=out.size(0), sync_dist=True)
-            # --- EVERYTHING CHECKED UP UNTIL HERE:
+
             #loss on variables: compute the variance on the variables
-            var_hot = nn.functional.one_hot(var_index_mask_no.long(), num_classes=torch.unique(var_index_mask_no).size(0))
+            var_hot = nn.functional.one_hot(var_index_mask_no.long(), num_classes=torch.unique(var_index_mask_no).size(0)) #batch x length x vars
             var_hot = var_hot.to(dtype=torch.bool)
-            out_vars = var_reg.unsqueeze(1) * var_hot.transpose(1, 2).unsqueeze(-1)
+            out_vars = var_reg.unsqueeze(1) * var_hot.transpose(1, 2).unsqueeze(-1) #batch x 1 x length x 10 * batch x vars x length x 1
+            #giving batch x vars x length x 10
            
             # ---- VARIANCE LOSS ----           
             out_var_mean = out_vars.mean(dim=-2, keepdim=True) #* mean_rescale # average on the tokens
@@ -281,6 +286,12 @@ class ShuffledTransformerStack(L.LightningModule):
             loss += var_loss
 
             self.log(f"{split}_loss_variance", var_loss, batch_size=out.size(0), sync_dist=True)
+
+            #together with other losses, the addition of below becomes linearity loss:
+            #the sum of all of them is equal to the mean of them 
+            #--- LINEARITY LOSS ---
+            linearity_loss = (2*out_var_mean.squeeze(-2) - torch.sum(out_vars, dim=-2))**2 #batch x vars x 10
+            loss += torch.mean(torch.sum(linearity_loss.sum(dim=-1), dim=-1))
 
             # --- COS SIM LOSS ----
             out_vars_normed = (out_vars.pow(2).sum(dim=-1) + 1e-6).sqrt()
@@ -306,6 +317,24 @@ class ShuffledTransformerStack(L.LightningModule):
 
             self.log(f"{split}_var_norm", torch.mean((out_vars.pow(2).sum(dim=-1) + 1e-6).sqrt()), sync_dist=True)
 
+            if bos is not None:
+                # -- roll out classifier loss -- 
+                with torch.no_grad():
+                    out_start = bos
+                    seq_syntax = torch.cat([torch.zeros(out_start.size(0), 1).to(bos.device), var_index_mask_no[:, :-1].type(torch.bool) + 2*lambda_index_mask[:, :-1].type(torch.bool) + 3*app_index_mask[:, :-1].type(torch.bool)], dim=1)
+                    seq_syntax = seq_syntax.long()
+                    while out_start.size(1) < target.size(1):
+                        o, classified_class, _ = self.model(out_start, seq_syntax[:, :out_start.size(1)], in_embs, sent_pad_mask, self.device)
+                        out_start = torch.cat([out_start[:, :1], o], dim=1)
+                
+                o, classified_class, _ = self.model(out_start, seq_syntax, in_embs, sent_pad_mask, self.device)
+                print("inference", F.softmax(classified_class, dim=-1)[0, :20])
+                time.sleep(60)
+                classifier_loss = class_criterion(classified_class.view(-1, 4), gt_cls_mask.view(-1))
+                loss += classifier_loss
+                self.log(f"{split}_loss_classifier_rollout", classifier_loss, batch_size=out.size(0), sync_dist=True)
+
+
         self.log(f"{split}_loss", loss, batch_size=out.size(0), sync_dist=True, prog_bar=True) 
 
         return loss   
@@ -313,7 +342,8 @@ class ShuffledTransformerStack(L.LightningModule):
     def training_step(self, batch, batch_idx):
         criterion = nn.MSELoss()
 
-        class_criterion = nn.CrossEntropyLoss(weight=torch.tensor([1,1,1,1,8]).to(self.device).to(dtype=torch.float))
+        # class_criterion = nn.CrossEntropyLoss(weight=torch.tensor([1,1,1,1,8]).to(self.device).to(dtype=torch.float))
+        class_criterion = nn.CrossEntropyLoss()
         (in_embs, target_embs, _, var_index_mask_no, lambda_index_mask, app_index_mask, stop_mask, pad_mask, sent_pad_mask) = batch
         
         out = target_embs[:, :-1, :]
@@ -326,7 +356,7 @@ class ShuffledTransformerStack(L.LightningModule):
         #offset the masks by one 
         lambda_index_mask, app_index_mask, var_index_mask_no, stop_mask, pad_mask = (lambda_index_mask[:, 1:], app_index_mask[:, 1:], var_index_mask_no[:, 1:], stop_mask[:, 1:], pad_mask[:, 1:])
         loss = self.common_loss([criterion, class_criterion], [out, classified_class, var_reg], target,
-                               lambda_index_mask, app_index_mask, var_index_mask_no, stop_mask, pad_mask, split="train")
+                               lambda_index_mask, app_index_mask, var_index_mask_no, stop_mask, pad_mask, split="train",bos=target_embs[:, :1, :], in_embs=in_embs, sent_pad_mask=sent_pad_mask)
 
         # roll out
         out, target = out[:, :-1, :], target[:, 1:, :]
