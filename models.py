@@ -68,7 +68,7 @@ class TransformerDecoderStack(nn.Module):
         self.d_model = d_model
         self.num_layers = num_layers
         self.num_heads = num_heads
-        self.initial_forward = nn.Linear(768, d_model) if not self.custom else nn.Linear(101, d_model)
+        self.initial_forward = nn.Linear(768, d_model) if not self.custom else nn.Linear(d_model, d_model)
         self.final_forward = nn.Linear(d_model, 768)
         self.classifier_forward = nn.Linear(d_model, 4)
         self.reg_forward1 = nn.Linear(d_model, d_model)
@@ -87,10 +87,15 @@ class TransformerDecoderStack(nn.Module):
         print(f"Total Trainable Params: {pytorch_total_params}")
                 
     def forward(self, seq, seq_syntax, emb, mb_pad=None, device="cuda"):
-        outputs = seq
 
-        outputs = self.pe_embed(self.initial_forward(outputs))
-        outputs += self.syntax_embed(seq_syntax)
+        if not self.custom:
+            outputs = seq
+            outputs = self.pe_embed(self.initial_forward(outputs)) # does th add in the pemebed forward
+            outputs += self.syntax_embed(seq_syntax)
+        else:
+            outputs = self.syntax_embed(seq_syntax)
+            outputs = self.pe_embed(self.initial_forward(outputs))
+
         emb = self.initial_forward(emb)
         tgt_mask = torch.nn.Transformer.generate_square_subsequent_mask(seq.size(1)).to(emb.device)
 
