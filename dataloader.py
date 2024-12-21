@@ -702,8 +702,8 @@ def shuffled_collate(batch):
     lambda_term_embedding_batched = lambda_term_embedding_batched.masked_fill(lambda_pad_mask, 0)
     lambda_pad_mask = lambda_pad_mask.sum(-1) >= 1 #so anything thats a padded token position is 0
 
-    #make all the pad embeddings be the sep token embeddings
-    lambda_term_embedding_batched[lambda_pad_mask] = torch.tensor(SEP_TOKEN_LAST).reshape(1, -1)
+    # #make all the pad embeddings be the sep token embeddings
+    # lambda_term_embedding_batched[lambda_pad_mask] = torch.tensor(SEP_TOKEN_LAST).reshape(1, -1) -- #NOT DOING ANYMORE
 
     sent_pad_mask = sent_embedding_batched == 15
     sent_embedding_batched = sent_embedding_batched.masked_fill(sent_pad_mask, 0)
