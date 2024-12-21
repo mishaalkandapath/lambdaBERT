@@ -59,104 +59,6 @@ class PositionalEncoding(nn.Module):
         x = x + self.pe[:x.size(0)]
         return self.dropout(x)
 
-class Attention(nn.Module):
-    def __init__(self, dim, h_dim, n_heads, dropout=0.0):
-        super().__init__()
-        self.dim = dim
-        self.head_dim = h_dim
-        self.n_heads = n_heads
-        self.dropout = dropout 
-
-        self.wq = nn.Linear(dim, self.n_heads * self.head_dim, bias=False)
-        self.wk = nn.Linear(dim, self.n_heads * self.head_dim, bias=False)
-        self.wv = nn.Linear(dim, self.n_heads * self.head_dim, bias=False)
-        self.wo = nn.Linear(self.n_heads * self.head_dim, dim, bias=False)
-    
-    def forward(self, queries, keys, values, mask=None):
-        xq = self.wq(queries)  # (batch_size, seq_len, n_heads * head_dim)
-        xk = self.wk(keys)  # (batch_size, seq_len, n_heads * head_dim)
-        xv = self.wv(values)  # (batch_size, seq_len, n_heads * head_dim)
-
-        bs = xq.shape[0]
-        q_len = xq.shape[1]
-        k_len = xk.shape[1]
-        v_len = xv.shape[1]
-
-        xq = xq.view(bs, q_len, self.n_heads, self.head_dim)
-        xk = xk.view(bs, k_len, self.n_heads, self.head_dim)
-        xv = xv.view(bs, v_len, self.n_heads, self.head_dim)
-
-        xq = xq.transpose(1, 2)  # (bs, n_heads, q_len, head_dim)
-        xk = xk.transpose(1, 2)  # (bs, n_heads, k_len, head_dim)
-        xv = xv.transpose(1, 2)  # (bs, n_heads, v_len, head_dim)
-
-        output = F.scaled_dot_product_attention(
-            query=xq,
-            key=xk,
-            value=xv,
-            attn_mask=mask.unsqueeze(1) if mask is not None else mask,
-            dropout_p=self.dropout,
-            is_causal=True,
-        )
-        output = output.transpose(1, 2)  # (bs, q_len, n_heads, head_dim)
-        output = output.contiguous().view(bs, q_len, -1)
-
-        return self.wo(output)# (batch_size, seq_len, n_heads * head_dim)
-
-class GatedFFN(nn.Module):
-    def __init__(self, dim, h_dim, multiple_of=256, dropout=0.0):
-        super().__init__()
-        self.dropout = dropout
-
-        # Hidden layer dim calculation.
-        h_dim = int(2 * h_dim / 3)
-        h_dim = h_dim + multiple_of - 1
-        h_dim = multiple_of * (h_dim // multiple_of)
-
-        self.w1 = nn.Linear(dim, h_dim, bias=False)
-        self.w2 = nn.Linear(h_dim, dim, bias=False)
-        self.w3 = nn.Linear(dim, h_dim, bias=False)
-
-    def forward(self, input):
-        hidden = self.w1(input)
-        hidden = F.silu(hidden) * self.w3(input)
-        return self.w2(hidden)
-
-class EDecoderBlock(nn.Module):
-    def __init__(self, dim, h_dim, n_heads, dropout=0.0):
-        super().__init__()
-        self.dim = dim
-        self.h_dim = h_dim
-        self.n_heads = n_heads
-        self.dropout = dropout
-    
-        self.attention = Attention(dim=self.dim, h_dim=self.h_dim, n_heads=self.n_heads, dropout=self.dropout)
-        self.enc_attention = Attention(dim=self.dim, h_dim=self.h_dim, n_heads=self.n_heads, dropout=self.dropout)
-        self.a_norm = nn.LayerNorm(self.dim, 1e-12)
-        self.ae_norm = nn.LayerNorm(self.dim, 1e-12)
-
-        self.ffn = GatedFFN(self.dim, 4*self.dim, dropout=self.dropout)
-        self.ffn_norm = nn.LayerNorm(self.dim, 1e-12)
-    
-    def forward(self, input, encoder_feats, pad_mask_feats):
-        input_norm = self.a_norm(input)
-        h = self.attention(
-            queries=input_norm,
-            keys=input_norm,
-            values=input_norm
-        )
-        h = h + input
-        h_enc = self.enc_attention(
-            queries=self.ae_norm(h),
-            keys=encoder_feats,
-            values=encoder_feats,
-            mask=pad_mask_feats,
-        )
-        h = h + h_enc
-        outs = h + self.ffn(self.ffn_norm(h))
-        return outs
-
-
 ### Model Definition ###
 class TransformerDecoderStack(nn.Module):
     def __init__(self, num_layers, d_model, num_heads, d_ff, dropout=0.2, devices=[],custom=False):
@@ -165,16 +67,15 @@ class TransformerDecoderStack(nn.Module):
         self.d_model = d_model
         self.num_layers = num_layers
         self.num_heads = num_heads
-        self.initial_forward = nn.Linear(768, d_model)
+        self.initial_forward = nn.Linear(768, d_model) if not self.custom else nn.Linear(101, d_model)
         self.final_forward = nn.Linear(d_model, 768)
         self.classifier_forward = nn.Linear(d_model, 4)
         self.reg_forward1 = nn.Linear(d_model, d_model)
-        self.reg_forward2 = nn.Linear(d_model, 10)
+        self.reg_forward2 = nn.Linear(d_model, 100)
         self.reg_act = nn.GELU()
 
         self.decoders = nn.ModuleList([nn.TransformerDecoderLayer(d_model, num_heads, dropout=dropout, batch_first=True, norm_first=True)
-                                        for _ in range(self.num_layers)]) if not custom else \
-                                        nn.ModuleList([EDecoderBlock(d_model, d_model//num_heads, num_heads, dropout=dropout) for _ in range(self.num_layers)])
+                                        for _ in range(self.num_layers)])
         
         self.pe_embed = PositionalEncoding(self.d_model)
         self.syntax_embed = nn.Embedding(4, self.d_model)
@@ -185,11 +86,6 @@ class TransformerDecoderStack(nn.Module):
         print(f"Total Trainable Params: {pytorch_total_params}")
                 
     def forward(self, seq, seq_syntax, emb, mb_pad=None, device="cuda"):
-        if mb_pad is not None and self.custom: 
-            mb_pad = mb_pad != 1 #TODO: REVISE THIS BEFORE RUNNING - DEFN OF PAD MASK HAS CHANGED IN DATALOADER
-            mb_pad = torch.ones(seq.shape[-3:]).to(device=device) @ mb_pad.transpose(-1, -2).to(dtype=torch.float32)
-            mb_pad = mb_pad.to(torch.bool)
-
         outputs = seq
 
         outputs = self.pe_embed(self.initial_forward(outputs))
@@ -197,10 +93,10 @@ class TransformerDecoderStack(nn.Module):
         emb = self.initial_forward(emb)
         tgt_mask = torch.nn.Transformer.generate_square_subsequent_mask(seq.size(1)).to(emb.device)
 
-        if not self.custom: emb *= (~mb_pad.unsqueeze(-1))
+        emb *= (~mb_pad.unsqueeze(-1))
 
         for i in range(self.num_layers):
-            outputs = self.decoders[i](outputs, emb, tgt_mask=tgt_mask, tgt_is_causal=True) if not self.custom else self.decoders[i](outputs, emb, mb_pad)
+            outputs = self.decoders[i](outputs, emb, tgt_mask=tgt_mask, tgt_is_causal=True)
         
         #Variable classification and prediction
         classified_class = self.classifier_forward(outputs) # predict the classifier absed on this 
@@ -209,18 +105,16 @@ class TransformerDecoderStack(nn.Module):
         outputs = self.final_forward(outputs) # back to 768
 
         # var_emb = torch.zeros_like(outputs.sum(-1).unsqueeze(-1)) --- debugging without zes
-      
+        
         return outputs, classified_class, var_emb
    
 class ShuffledTransformerStack(L.LightningModule):
-    def __init__(self, model, t_force=True, t_damp=0.95):
+    def __init__(self, model, t_force=True, t_damp=0.95, custom=False):
         super().__init__()
         self.model = model
         self.t_force = t_force
         self.t_damp = t_damp if self.t_force else 1
-        #pick a random bunch of parameters:
-        # self.reference_param = None
-        # self.fin_reference = None
+        self.custom = custom
 
     def validation_step(self, batch, batch_idx):
         criterion = nn.MSELoss()

@@ -811,7 +811,9 @@ def create_out_tensor(sentence, lambda_term):
     # print(lambda_term)
     repl_words = words.copy()
     for i, (start, end) in enumerate(offset_mapping):
-        if start ==0 and end == 0: new_word_mapping.append(-1)
+        if start ==0 and end == 0: 
+            if acc != "": new_word_mapping.extend([words.index(acc)]*how_many)
+            new_word_mapping.append(-1)
         else: 
             if start > prev_end and acc in words:
                 new_word_mapping.extend([words.index(acc)]*how_many)
@@ -821,8 +823,7 @@ def create_out_tensor(sentence, lambda_term):
             acc += " ".join(words)[start:end]
             how_many +=1
             prev_end = end
-    #add in the last one
-    new_word_mapping.extend([words.index(acc)]*how_many)
+    
 
     words = repl_words
     
@@ -847,7 +848,7 @@ def create_out_tensor(sentence, lambda_term):
     # assert len(re.findall(r"<w_\d+>", lambda_term)) == 0, f"Invalid lambda term {lambda_term}\n{words}"
     weird_dots = re.findall(r"<w_\d+>", lambda_term)
     for i, dot in enumerate(weird_dots):
-        lambda_term = lambda_term.replace(dot, f"lamda_{i+10000}")
+        lambda_term = lambda_term.replace(dot, f"..._{i+10000}")
 
     for char in lambda_term:
         if char in "( )":
@@ -871,7 +872,7 @@ def create_out_tensor(sentence, lambda_term):
         if lambda_pattern.match(element) is not None:
             var_logs.append(element[1:-1])
 
-    words[3] = "lamda"
+    # words[3] = "lamda"
     for w, word in enumerate(words):
         #find if this constitutes an entity in the lambda term
         #entities are of the form words_dddd
@@ -883,7 +884,8 @@ def create_out_tensor(sentence, lambda_term):
         elif word == "}": word = "RCB"
 
         if "λ" in word: word = word.replace("λ", "")
-        if word not in lambda_term and word != "lamda": continue
+        # if word not in lambda_term and word != "lamda": continue
+        if word not in lambda_term: continue
         #traverse the lambda_term 
         min_indx, min_no = 500000, 500000
         for i, term in enumerate(lambda_term_list):
@@ -893,7 +895,8 @@ def create_out_tensor(sentence, lambda_term):
                     min_no = no
                     min_indx = i
         if min_indx == 500000: 
-            if word != "": print("First instance Could not find a match for ", word)
+            if word != "": 
+                print("First instance Could not find a match for ", word)
             continue
         #replace with something random
         lambda_term_list[min_indx] = replacement*len(word)
@@ -918,7 +921,7 @@ def create_out_tensor(sentence, lambda_term):
     for i, element in enumerate(lambda_term_list):
         if element == "(" or element == ")":
             lambda_term_embedding.append("loo" if element == ")" else torch.tensor(OPEN_RRB))
-            lambda_term_embedding_last.append("loo" if element == ")" else torch.tensor(OPEN_RRB))
+            lambda_term_embedding_last.append("loo" if element == ")" else torch.tensor(OPEN_RRB_LAST))
             app_mask.append(1)
             lambda_mask.append(0)
             var_mask.append(0)
@@ -926,7 +929,7 @@ def create_out_tensor(sentence, lambda_term):
             lambda_term_tokens_temp.append(113)
         elif lambda_pattern.match(element)is not None:
             lambda_term_embedding.append(torch.tensor(LAMBDA))
-            lambda_term_embedding_last.append(torch.tensor(LAMBDA))
+            lambda_term_embedding_last.append(torch.tensor(LAMBDA_LAST))
             var_mask.append(0)
             lambda_mask.append(1)
             app_mask.append(0)
@@ -982,7 +985,7 @@ def create_out_tensor(sentence, lambda_term):
     #         temp_tokens[i] = (f"NP_{len(temp_temp_vars)}")
     #     else:
     #         temp_tokens[i] = (f"NP_{temp_temp_vars.index(token)+1}")
-    return representations, torch.stack(lambda_term_embedding, dim=0), torch.stack(lambda_term_embedding_last, dim=0),lambda_term_tokens, var_mask, lambda_mask, app_mask
+    return representations, last_representations, torch.stack(lambda_term_embedding, dim=0), torch.stack(lambda_term_embedding_last, dim=0),lambda_term_tokens, var_mask, lambda_mask, app_mask
 
 def convert_lambda_tokens(converted_targets, lambda_index_mask, var_index_mask_no, app_index_mask):
     for i, t in enumerate(converted_targets):
@@ -1021,15 +1024,15 @@ if __name__ == "__main__":
         with open(path, 'r') as f:
             lambda_terms = f.readlines()[0].strip()
         lambda_terms = lambda_terms.replace(")", "")
-        sent_emb, target_emb, target_emb_last, target_tokens, var_mask, lambda_mask, app_mask = create_out_tensor(gen_sent, lambda_terms)
+        sent_emb, sent_emb_last, target_emb, target_emb_last, target_tokens, var_mask, lambda_mask, app_mask = create_out_tensor(gen_sent, lambda_terms)
 
         # print(" ".join(convert_lambda_tokens(TOKENIZER.convert_ids_to_tokens([101 if t<0 else t for t in target_tokens]), lambda_mask, var_mask, app_mask)))
 
         if os.path.exists(f"/w/150/lambda_squad/{df.iloc[i, 2][:-4]}.pt"): 
             #delete it
             os.remove(f"/w/150/lambda_squad/{df.iloc[i, 2][:-4]}.pt")
-        torch.save((sent_emb, target_emb, target_emb_last, target_tokens, var_mask, lambda_mask, app_mask), f"/w/150/lambda_squad/{df.iloc[i, 2][:-4]}.pt")
-    print((sentences))
+        torch.save((sent_emb, sent_emb_last, target_emb, target_emb_last, target_tokens, var_mask, lambda_mask, app_mask), f"/w/150/lambda_squad/{df.iloc[i, 2][:-4]}.pt")
+    # print((sentences))
 
     # for i in [67254, 57102, 40593, 43650]:
     #     gen_sent = eval(df.iloc[i, 1])
