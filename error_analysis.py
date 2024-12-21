@@ -13,6 +13,11 @@ import re, copy
 from transformers import BertForMaskedLM, BertConfig
 from multipledispatch import dispatch
 
+import matplotlib.pyplot as plt
+import seaborn as sns
+from collections import defaultdict
+import random
+
 SEP_ID=102
 BOS_ID=101
 
@@ -54,28 +59,32 @@ thread_locked_dict = ThreadLockDict()
 def model_inference(model, dataloader):
     global DEVICE
     model.eval()
-    confusion_matrix = torch.zeros(4, 4)
+    confusion_matrix = torch.zeros(5, 5)
     average_loss = 0
     count = 0
     outs = []
     cls_outs = []
+
+    prs, ps = [], []
+    word_prs, var_prs, lambda_prs, app_prs = [], [], [], []
+    word_ps, var_ps, lambda_ps, app_ps = [], [], [], []
     with torch.no_grad():
         #prpgress bar
         pbar = tqdm.tqdm(total=len(dataloader))
         for k, batch in enumerate(dataloader):
-            (in_embs, target_embs, target_tokens, var_index_mask_no, lambda_index_mask, app_index_mask, pad_mask, sent_pad_mask) = batch
+            (in_embs, target_embs, target_tokens, var_index_mask_no, lambda_index_mask, app_index_mask, stop_mask, pad_mask, sent_pad_mask) = batch
             #move to device
-            in_embs, target_embs, target_tokens, var_index_mask_no, lambda_index_mask, app_index_mask, pad_mask, sent_pad_mask = in_embs.to(DEVICE), target_embs.to(DEVICE), target_tokens.to(DEVICE), var_index_mask_no.to(DEVICE), lambda_index_mask.to(DEVICE), app_index_mask.to(DEVICE), pad_mask.to(DEVICE), sent_pad_mask.to(DEVICE)
+            in_embs, target_embs, target_tokens, var_index_mask_no, lambda_index_mask, app_index_mask, stop_mask, pad_mask, sent_pad_mask = in_embs.to(DEVICE), target_embs.to(DEVICE), target_tokens.to(DEVICE), var_index_mask_no.to(DEVICE), lambda_index_mask.to(DEVICE), app_index_mask.to(DEVICE), stop_mask.to(DEVICE), pad_mask.to(DEVICE), sent_pad_mask.to(DEVICE)
             
-            seq_syntax = var_index_mask_no.type(torch.bool) + 2*lambda_index_mask.type(torch.bool) + 3*app_index_mask.type(torch.bool)
-            out, classified_class, var_reg = model(target_embs[:, :-1, :], seq_syntax[:, :-1],in_embs, sent_pad_mask) # get_discrete_output(in_embs, model, target_tokens.shape[1])
+            seq_syntax = var_index_mask_no.type(torch.bool) + 2*lambda_index_mask.type(torch.bool) + 3*app_index_mask.type(torch.bool) 
+            out, classified_class, var_reg = model(target_embs[:, :-1, :], seq_syntax[:, :-1], in_embs, sent_pad_mask) # get_discrete_output(in_embs, model, target_tokens.shape[1])
             target = target_embs[:, 1:, :]
-            lambda_index_mask, app_index_mask, var_index_mask_no, pad_mask = (lambda_index_mask[:, 1:], app_index_mask[:, 1:], var_index_mask_no[:, 1:], pad_mask[:, 1:])
+            lambda_index_mask, app_index_mask, var_index_mask_no, stop_mask, pad_mask = (lambda_index_mask[:, 1:], app_index_mask[:, 1:], var_index_mask_no[:, 1:], stop_mask[:, 1:], pad_mask[:, 1:])
         
             #classiifer truth
-            gt_cls_mask = var_index_mask_no.type(torch.bool) + 2*lambda_index_mask.type(torch.bool) + 3*app_index_mask.type(torch.bool) #because lambda's class is 2
+            gt_cls_mask = var_index_mask_no.type(torch.bool) + 2*lambda_index_mask.type(torch.bool) + 3*app_index_mask.type(torch.bool) #+ 4*stop_mask.type(torch.bool) #because lambda's class is 2
             loss = nn.functional.cross_entropy(classified_class.view(-1, 4), gt_cls_mask.view(-1), reduction="none")
-            loss = ((loss) * (0.95 ** (torch.arange(loss.shape[0])).to(gt_cls_mask.device))).mean()
+            loss = ((loss) * (0.95 ** (torch.arange(loss.shape[0])).to(gt_cls_mask.device))).mean()# -- discounted loss
             average_loss += loss.item()
             count += 1
             pbar.set_description(f"Loss: {loss.item()/count}")
@@ -86,21 +95,142 @@ def model_inference(model, dataloader):
                 for j in range(4):
                     confusion_matrix[i, j] += ((classified_class_ == j) & (gt_cls_mask == i)).sum().detach().cpu()
 
+            #probability of true sequence:
+            # pr = torch.nn.Softmax(dim=-1)(classified_class).max(dim=-1)[0].prod(dim=-1).squeeze(0).item()
+            pr = torch.nn.Softmax(dim=-1)(classified_class)
+            pr = torch.gather(pr, -1, gt_cls_mask.unsqueeze(-1)).squeeze(-1).prod(dim=-1).squeeze(0).item()
+
             #Write the written outputs:
-            # out = out[0].argmax(-1) if len(out.shape) == 3 else out[0]
-            # outs.append([classified_class_.squeeze(0).tolist(), get_out_list(out, classified_class, var_reg)])
-            # outs.append([classified_class_.squeeze(0).tolist(), get_discrete_output(in_embs, model)])
-            # if k>10: break
+            out = out[0].argmax(-1) if len(out.shape) == 3 else out[0]
+            outs.append([classified_class_.squeeze(0).tolist(), get_out_list(out, classified_class, var_reg), pr])
+            
+            beam_size = 12
+            x, y, z, p = get_discrete_output(in_embs, model, tokenized=True, last=False, max_len=200, unfiltered_class=True, beam_size=beam_size)
+            if beam_size <= 1: outs.append([y.argmax(-1).squeeze(0).tolist(), get_out_list(x, y, z), p])
+            else:
+                for jkl in range(len(y)):
+                    outs.append([y[jkl].tolist(), get_out_list(x[jkl], y[jkl], z[jkl]), p[jkl].item()])
+                outs.append(["", "", ""]) # emmpty divider
+
+            if not beam_size: 
+                classified_class_ = torch.nn.Softmax(dim=-1)(classified_class).cpu()
+                word_prs.append(classified_class_[0, :, 0])
+                var_prs.append(classified_class_[0, :, 1])
+                lambda_prs.append(classified_class_[0, :, 2])
+                app_prs.append(classified_class_[0, :, 3])
+
+                y = torch.nn.Softmax(dim=-1)(y).cpu()
+                word_ps.append(y[0, :, 0])
+                var_ps.append(y[0, :, 1])
+                lambda_ps.append(y[0, :, 2])
+                app_ps.append(y[0, :, 3])
+
+            prs.append(pr)
+            ps.append(p) if beam_size <= 1 else ps.extend(p)
+            if k>10: break
     # #write
     loss = average_loss / count
     print("Average Loss: ", loss)
 
-    # csv_file = open("outputs.csv", "w")
-    # csv_writer = csv.writer(csv_file)
-    # csv_writer.writerows(outs)
-    # csv_file.close()
+    csv_file = open("outputs_gahhhh.csv", "w")
+    csv_writer = csv.writer(csv_file)
+    csv_writer.writerows(outs)
+    csv_file.close()
+
+    plot_teacher_forcing_error(prs, ps, save_as="teaching_forcing_not_last.png")
+    # mean_probability_measures(word_prs, word_ps, title="Evolution of Word Probabilities", save_as="word_time_notlast.png")
+    # mean_probability_measures(var_prs, var_ps, title="Evolution of Var Probabilities", save_as="var_time_notlast.png")
+    # mean_probability_measures(lambda_prs, lambda_ps, title="Evolution of Lambda Probabilities", save_as="lmda_time_notlast.png")
+    # mean_probability_measures(app_prs, app_ps, title="Evolution of App Probabilities", save_as="app_time_notlast.png")
+
 
     return confusion_matrix
+
+def plot_teacher_forcing_error(true_prs, inference_prs, save_as=""):
+    diff = np.array(true_prs) - np.array(inference_prs)
+
+    # Create histogram using seaborn for better default styling
+    plt.figure(figsize=(10, 6))
+    sns.histplot(diff, bins=30, kde=True)
+    
+    # Add labels and title
+    plt.xlabel('Probability Difference (True - Inference)')
+    plt.ylabel('Count')
+    plt.title('Distribution of Teaching Forcing vs Inference Probability Differences')
+    
+    # Add grid for better readability
+    plt.grid(True, alpha=0.3)
+    
+    plt.savefig(save_as)
+
+def mean_probability_measures(true_probs, inference_probs, title="Evolution of Var Probabilities", save_as=""):
+    """
+    Create a bar plot comparing mean probabilities at each position, excluding -1 values.
+    Args:
+        true_probs: Matrix of shape B x N with true probabilities
+        inference_probs: Matrix of shape B x N with inference probabilities
+        title: Plot title
+    """
+
+    max_len = max(max(len(seq) for seq in true_probs), 
+                  max(len(seq) for seq in inference_probs))
+    
+    def pad_sequence(seq, max_len):
+        return np.pad(seq, (0, max_len - len(seq)), 
+                     mode='constant', 
+                     constant_values=-1)
+    
+    # Convert lists to padded numpy arrays
+    true_probs = np.array([pad_sequence(seq, max_len) for seq in true_probs])
+    inference_probs = np.array([pad_sequence(seq, max_len) for seq in inference_probs])
+    
+    # Get number of positions (N)
+    n_positions = true_probs.shape[1]
+    
+    # Calculate means at each position, excluding -1s
+    true_means = []
+    inference_means = []
+    
+    for pos in range(n_positions):
+        # Get values at current position
+        true_pos_vals = true_probs[:, pos]
+        inf_pos_vals = inference_probs[:, pos]
+        
+        # Filter out -1 values
+        true_valid = true_pos_vals[true_pos_vals != -1]
+        inf_valid = inf_pos_vals[inf_pos_vals != -1]
+        
+        # Calculate means (if there are valid values)
+        true_mean = np.mean(true_valid) if len(true_valid) > 0 else 0
+        inf_mean = np.mean(inf_valid) if len(inf_valid) > 0 else 0
+        
+        true_means.append(true_mean)
+        inference_means.append(inf_mean)
+    
+    # Convert to numpy arrays
+    true_means = np.array(true_means)
+    inference_means = np.array(inference_means)
+    
+    # Create positions for bars
+    x = np.arange(n_positions)
+    width = 0.35  # Width of bars
+    
+    # Create plot
+    plt.figure(figsize=(12, 6))
+    plt.bar(x - width/2, true_means, width, label='True Probabilities', alpha=0.7)
+    plt.bar(x + width/2, inference_means, width, label='Inference Probabilities', alpha=0.7)
+    
+    # Customize plot
+    plt.xlabel('Position')
+    plt.ylabel('Mean Probability')
+    plt.title(title)
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    
+    # Set x-axis ticks
+    plt.xticks(x)
+    
+    plt.savefig(save_as)
 
 # plot confusion matrix
 def plot_confusion_matrix(confusion_matrix, split="train"):
@@ -108,7 +238,7 @@ def plot_confusion_matrix(confusion_matrix, split="train"):
     #normalize confusion matrix
     confusion_matrix = confusion_matrix / confusion_matrix.sum(dim=1, keepdim=True)
     #make a color bar
-    label_map = {0: "Word", 1: "Variable", 2: "Lambda", 3: "Application"}
+    label_map = {0: "Word", 1: "Variable", 2: "Lambda", 3: "Application"}#, 4: "Stop"}
     plt.imshow(confusion_matrix, cmap="viridis", )
     plt.xticks(list(label_map.keys()), list(label_map.values()))
     plt.yticks(list(label_map.keys()), list(label_map.values()))
@@ -169,7 +299,7 @@ def scope_violation_count(words):
     return out_of_bounds
 
 
-def get_discrete_output(input_embs, model, max_len=20, tokenized=False):
+def get_discrete_output(input_embs, model, max_len=20, tokenized=False, last=False, unfiltered_class=False, beam_size=1):
     model.eval()
     #bert tokenize and get embeddings
     if not tokenized: 
@@ -177,8 +307,8 @@ def get_discrete_output(input_embs, model, max_len=20, tokenized=False):
         input_embs, _ = get_bert_emb(tokenized)
     input_embs = input_embs.to(DEVICE)
     #model inference
-    out, classified_class, var_reg = model(input_embs, max_len=max_len)
-    return out, classified_class, var_reg
+    out, classified_class, var_reg, pr = model(input_embs, max_len=max_len, last=last, unfiltered_class=unfiltered_class, beam_size=beam_size)
+    return out, classified_class, var_reg, pr
 
 def get_out_list(out, classified_class, var_reg):
     classified_class = classified_class.argmax(dim=-1).squeeze(0)
@@ -309,28 +439,34 @@ class ClassifierModel(nn.Module):
         self.linear = linear
     
     @dispatch(torch.Tensor)
-    def forward(self, in_embs, max_len=20, classify=True):
-        x = torch.tensor(BOS_TOKEN_LAST).to(in_embs.device)
-        out_stacked, classified_class_stacked, var_reg_stacked, newest_out = x, torch.tensor([[0]]).long() if classify else None, None, None
+    def forward(self, in_embs, max_len=20, classify=True, beam_size=0, last=False, unfiltered_class=False):
+        # NOTE: classify shud be deprecated
+        if beam_size >= 1: 
+            return self.beam_search_inference(in_embs, max_len=max_len, classify=classify, beam_size=beam_size)
+        pr = 1
+        x = torch.tensor(BOS_TOKEN if not last else BOS_TOKEN_LAST).to(in_embs.device)
+        out_stacked, classified_class_stacked, classified_class_stacked_unfiltered, var_reg_stacked, newest_out = x, torch.tensor([[0]]).long().to(in_embs.device) if classify else None, None, None, None
         list_out = []
         while newest_out != 102 and len(list_out) < max_len-1:
             out, classified_class, var_reg = self.model(x, classified_class_stacked, in_embs, mb_pad=torch.zeros(in_embs.shape[:-1]).to(x.device).to(torch.bool), device=x.device)
             if classify: 
-                classified_class = classified_class.argmax(dim=-1)
+                pr *= torch.nn.Softmax()(classified_class.view(-1)).max().item()
+                classified_class_ = classified_class.argmax(dim=-1) # CHANGE IF INCLUDING STOP
             if var_reg_stacked is None:
                 var_reg_stacked = var_reg
+                classified_class_stacked_unfiltered = classified_class
                 out_stacked = torch.cat([out_stacked, out[:, -1].unsqueeze(1)], dim=1)
-                classified_class_stacked = torch.cat([classified_class_stacked, classified_class[:, -1].unsqueeze(1)], dim=1)
+                classified_class_stacked = torch.cat([classified_class_stacked, classified_class_[:, -1].unsqueeze(1)], dim=1)
             else:
                 out_stacked = torch.cat([out_stacked, out[:, -1].unsqueeze(1)], dim=1)
-                classified_class_stacked = torch.cat([classified_class_stacked, classified_class[:, -1].unsqueeze(1)], dim=1)
+                classified_class_stacked = torch.cat([classified_class_stacked, classified_class_[:, -1].unsqueeze(1)], dim=1)
                 var_reg_stacked = torch.cat([var_reg_stacked, var_reg[:, -1].unsqueeze(1)], dim=1)
+                classified_class_stacked_unfiltered = torch.cat([classified_class_stacked_unfiltered, classified_class[:, -1].unsqueeze(1)], dim=1)
             
 
             if not classify: cls_probs = nn.functional.softmax(classified_class[-1, -1], dim=-1)
             # print(cls_probs.sort(-1))
-            if (not classify and classified_class[-1, -1].argmax() == 0) \
-                or (classify and classified_class[-1, -1] == 0):
+            if classified_class_[-1, -1] == 0:
                 sorted_stiff, newest_out = self.linear(out[0, -1, :]).sort(-1)
                 # print(TOKENIZER.convert_ids_to_tokens(newest_out[-5:]))
                 # print(nn.functional.softmax(sorted_stiff, dim=-1)[-5:])
@@ -342,8 +478,127 @@ class ClassifierModel(nn.Module):
                 list_out.append(101)
             # print("->EOW->")
             x = out_stacked
-        return torch.tensor(list_out).unsqueeze(0) if not classify else torch.tensor(list_out), classified_class_stacked[:, 1:] if not classify else torch.nn.functional.one_hot(classified_class_stacked[:, 1:], num_classes=4), var_reg_stacked
+        return torch.tensor(list_out).unsqueeze(0) if not classify else torch.tensor(list_out), classified_class_stacked_unfiltered if unfiltered_class else torch.nn.functional.one_hot(classified_class_stacked[:, 1:], num_classes=4), var_reg_stacked, pr
     
+    
+    def get_words(self, out, cl): #given an output for a sequence, produce the discrete tokenized sequence
+        list_out = []
+        for i in range(out.shape[0]):
+            if cl[i] == 0:
+                sorted_stiff, newest_out = self.linear(out[i, :]).sort(-1)
+                newest_out = newest_out[-1].item()
+                list_out.append(newest_out)
+            else:
+                list_out.append(101)
+
+        return list_out
+
+    def beam_search_inference(self, in_embs, max_len=20, classify=True, beam_size=1): # TODO: make beam start from 5 -- number of classes
+        x = torch.tensor(BOS_TOKEN_LAST).to(in_embs.device)
+        out_stacked, classified_class_stacked, var_reg_stacked, newest_out = x, torch.tensor([[0]]).long().to(x.device) if classify else None, None, None
+        list_out = []
+        cls_out = []
+        var_out = []
+        prob_list = []
+        while out_stacked.size(1) < max_len:
+            in_embs = torch.repeat_interleave(in_embs[0:1], x.size(0), dim=0).to(x.device)
+            # process each beam 
+            out, classified_class, var_reg = self.model(x, classified_class_stacked, in_embs, mb_pad=torch.zeros(in_embs.shape[:-1]).to(x.device).to(torch.bool), device=x.device)
+            if classify: 
+                #sort for beams
+                classified_class = nn.functional.softmax(classified_class, dim=-1)
+                cls_probs, classified_class = classified_class.sort(-1, descending=True) # batch x length x 4
+                classified_class = classified_class[:, :, :beam_size] # batch x length x beam
+                cls_probs = cls_probs[:, :, :beam_size] # batch x length x beam
+                
+                #make beams
+                if prob_list == []: #first time
+                    classified_class = classified_class.squeeze(0).T # beam x length -- because batch is 1
+                    cls_probs = cls_probs.squeeze(0).T # similarly 
+                    prob_list.extend(sum(cls_probs.tolist(), start=[])) #get the different beam probabilities -- not gonna log coz it might be to small or smth
+                else:
+                    # get the beam best from each, flatten, take beam best 
+                    #beam x length x 1 * batch x beam x length
+                    #prod the prbabilities to get the sequences probability so far
+                    cls_probs, classified_class_ = (torch.tensor(prob_list).to(x.device).unsqueeze(-1) * cls_probs.transpose(-1, -2)[:, : , -1]).flatten().sort(descending=True)
+                    #at this point i have sorted for each of the previous beams, its best succeeding beams. 
+                    classified_class_ = classified_class_[:beam_size]
+                    b_indices = classified_class_//min(beam_size, classified_class.size(-1)) #which previous beam is it from?
+                    cl_indices = classified_class_ % min(beam_size, classified_class.size(-1)) #which new beam is it?
+
+                    cls_probs = cls_probs[:beam_size]
+
+                    #classified class needs to be beam x length
+                    classified_class = classified_class[b_indices, :, cl_indices]
+
+                    #modify prob_list
+                    prob_list = torch.tensor(prob_list).to(b_indices.device)[b_indices] if type(prob_list) is list else prob_list[b_indices]
+                    prob_list *= cls_probs
+                    # print(prob_list, cls_probs)
+
+            if var_reg_stacked is None:
+                var_reg_stacked = var_reg
+                out_stacked = torch.cat([out_stacked, out[:, -1].unsqueeze(1)], dim=1) 
+                out_stacked = out_stacked.squeeze(0).repeat(min(beam_size, 4), 1, 1)# because the first remains for all the beams
+                var_reg_stacked = var_reg_stacked.squeeze(0).repeat(min(beam_size, 4), 1, 1)
+                classified_class_stacked = classified_class_stacked.squeeze(0).repeat(min(beam_size, 4), 1)
+                classified_class_stacked = torch.cat([classified_class_stacked, classified_class[:, -1].unsqueeze(1)], dim=1)
+                
+            else:
+                out_stacked = torch.cat([out_stacked[b_indices], out[b_indices, -1].unsqueeze(1)], dim=1) # get the outputs of these batches only
+                var_reg_stacked = torch.cat([var_reg_stacked[b_indices], var_reg[b_indices, -1].unsqueeze(1)], dim=1)
+                classified_class_stacked = torch.cat([classified_class_stacked[b_indices], classified_class[:, -1].unsqueeze(1)], dim=1)           
+
+            if not classify: cls_probs = nn.functional.softmax(classified_class[-1, -1], dim=-1)
+            
+            # check if theres a sentence that is to be stopped
+            rem_list = []
+            not_rem = []
+            for i in range(classified_class_stacked.size(0)):
+                if (classified_class_stacked[i, -1] == 0): # if we have a word
+                    sorted_stiff, newest_out = self.linear(out_stacked[i, -1, :]).sort(-1)
+                    newest_out = newest_out[-1].item()
+                    # print(TOKENIZER.convert_ids_to_tokens([newest_out]))
+                    if newest_out == 102: # and it is SEP
+                        if (len(list_out) == beam_size and list_out[0][0] < prob_list[i]) or (len(list_out) < beam_size): 
+                            if len(list_out) == beam_size: list_out = list_out[1:]
+                            list_out.append((prob_list[i], random.random(), self.get_words(out_stacked[i], classified_class_stacked[i]), 
+                                                                        classified_class_stacked[i, 1:],
+                                                                        var_reg_stacked[i])) # save the sequence
+                            list_out.sort() # maintain ordering
+                            rem_list.append(i)
+                            continue
+                not_rem.append(i)
+                assert len(list_out) <= beam_size, len(list_out)
+            if len(rem_list) == beam_size: break
+
+            for i in rem_list:
+                prob_list[i] = prob_list[not_rem[0]]
+                out_stacked[i] = out_stacked[not_rem[0]]
+                var_reg_stacked[i] = var_reg[not_rem[0]]
+                classified_class_stacked[i] = classified_class_stacked[not_rem[0]]
+
+            x = out_stacked
+            assert len(list_out) <= beam_size, len(list_out)
+        
+        if out_stacked.size(1) == max_len and len(list_out) != beam_size:
+            #gotta do one last check for the best sequeces:
+            for i in range(out_stacked.size(0)):
+                # if (classified_class_stacked[i, -1] == 0): # if we have a word
+                #     sorted_stiff, newest_out = self.linear(out_stacked[i, -1, :]).sort(-1)
+                #     newest_out = newest_out[-1].item()
+                if len(list_out) < beam_size or prob_list[i] > list_out[0][0]:
+                    if len(list_out) == beam_size: list_out = list_out[1:]# replace!
+                    list_out.append((prob_list[i], random.random(), self.get_words(out_stacked[i], classified_class_stacked[i]),
+                    classified_class_stacked[i, 1:], 
+                    var_reg_stacked[i]
+                    ))
+                    list_out.sort(key=lambda x: x[0]) # maintain ordering
+        assert len(list_out) <= beam_size, len(list_out)
+        list_out.sort(key=lambda x: x[0], reverse=True)
+        ps, _, list_out, cls_out, var_out = (zip(*list_out))   
+        return list_out, cls_out, var_out, ps
+
     @dispatch(torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor)   
     def forward(self, seq, seq_syntax, in_embs, mb_pad):
         outs, classified_class, var_emb = self.model(seq, seq_syntax, in_embs, mb_pad=mb_pad , device=seq.device)
@@ -359,9 +614,9 @@ def test_data_methods(dataset):
     target_decoded = TOKENIZER.convert_ids_to_tokens(target_tokens)
     print(" ".join(target_decoded))
 
-def parallelize_inference(i, model, words, max_len=200):
+def parallelize_inference(i, model, words, max_len=200, last=False):
     global thread_locked_dict
-    x = get_out_list(*get_discrete_output(words, model, max_len=200))
+    x = get_out_list(*get_discrete_output(words, model, max_len=200, last=False))
     thread_locked_dict[i] = x
 
 
@@ -371,6 +626,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_path", type=str, required=True)
     parser.add_argument("--cpu", action="store_true")
+    parser.add_argument("--last", action="store_true")
 
     args = parser.parse_args()
 
@@ -397,59 +653,63 @@ if __name__ == "__main__":
     model = model.to(DEVICE)
 
     # --LOAD DATA
-    dataloader, valid_dataloader, test_dataloader = dataloader.data_init(1)
+    dataloader, valid_dataloader, test_dataloader = dataloader.data_init(1, last=args.last)
 
 
     #-- CONFUSION MATRIX --
-    # confusion_matrix = model_inference(model, dataloader)
-    # plot_confusion_matrix(confusion_matrix)
+    # confusion_matrix = model_inference(model, test_dataloader)
+    # plot_confusion_matrix(confusion_matrix, "test")
 
     # confusion_matrix = model_inference(model, valid_dataloader)
     # plot_confusion_matrix(confusion_matrix, "valid")
 
-    # confusion_matrix = model_inference(model, test_dataloader)
-    # plot_confusion_matrix(confusion_matrix, "test")
+    confusion_matrix = model_inference(model, dataloader)
+    plot_confusion_matrix(confusion_matrix)
 
     # --DISCRETE OUTPUT SAMPLES
-    lines = pd.read_csv("data/input_sentences.csv", header=None)
-    out_file = open("data/output_samples.csv", "a")
-    out_file_csv = csv.writer(out_file)
+    # lines = pd.read_csv("data/input_sentences.csv", header=None)
+    # out_file = open("data/output_samples.csv", "a")
+    # out_file_csv = csv.writer(out_file)
 
-    # rand_lines = random.choices(range(len(lines)))
-    write_lines = []
-    for r_line in tqdm.tqdm(range(0, len(lines), 15)):
-        w_words = []
-        for rand_line in range(r_line, min(r_line+15, len(lines))):
-            line = eval(lines.iloc[rand_line, 1])
-            target_path = lines.iloc[rand_line, 2][11:]
-            target_text = open(target_path, "r").readlines()[0]
-            words = " ".join(line).replace("...}"," ...}").replace("{..","{. .").replace("NP.","NP .").replace("NP—","NP —").replace(",}"," ,}").\
-                replace("'re"," 're").replace("'s"," 's").replace("'ve}"," 've}").replace("!}"," !}").replace("?}"," ?}").replace("n't"," n't").\
-                replace("'m}"," 'm}").replace("{. ..","{...").replace("{——}","{— —}").replace("{--—}","{- -—}").replace("St.", "St").split()
-            words = [word[:-1] for i, word in enumerate(words) if i % 2 != 0]
-            words = " ".join(words)
+    # # rand_lines = random.choices(range(len(lines)))
+    # write_lines = []
+    # for r_line in tqdm.tqdm(range(0, len(lines), 15)):
+    #     w_words = []
+    #     for rand_line in range(r_line, min(r_line+15, len(lines))):
+    #         line = eval(lines.iloc[rand_line, 1])
+    #         target_path = lines.iloc[rand_line, 2][11:]
+    #         target_text = open(target_path, "r").readlines()[0]
+    #         words = " ".join(line).replace("...}"," ...}").replace("{..","{. .").replace("NP.","NP .").replace("NP—","NP —").replace(",}"," ,}").\
+    #             replace("'re"," 're").replace("'s"," 's").replace("'ve}"," 've}").replace("!}"," !}").replace("?}"," ?}").replace("n't"," n't").\
+    #             replace("'m}"," 'm}").replace("{. ..","{...").replace("{——}","{— —}").replace("{--—}","{- -—}").replace("St.", "St").split()
+    #         words = [word[:-1] for i, word in enumerate(words) if i % 2 != 0]
+    #         words = " ".join(words)
         
-            w_words.append(words)
+    #         w_words.append(words)
 
-        #parallelize
-        threads = []
-        for i, words in enumerate(w_words):
-            t = threading.Thread(target=parallelize_inference, args=(i, model, words))
-            threads.append(t)
-            t.start()
+    #     #parallelize
+    #     threads = []
+    #     for i, words in enumerate(w_words):
+    #         t = threading.Thread(target=parallelize_inference, args=(i, model, words, 200, args.last))
+    #         threads.append(t)
+    #         t.start()
         
-        for t in threads:
-            t.join()
+    #     for t in threads:
+    #         t.join()
         
-        for i in range(len(w_words)):
-            write_lines.append([w_words[i], thread_locked_dict[i]])
+    #     for i in range(len(w_words)):
+    #         write_lines.append([w_words[i], thread_locked_dict[i]])
         
-        #clear thread_locked dict:
-        w_words = []
-        thread_locked_dict = ThreadLockDict()
+    #     #clear thread_locked dict:
+    #     w_words = []
+    #     thread_locked_dict = ThreadLockDict()
 
-        if r_line % 90 == 0:
-            out_file_csv.writerows(write_lines)
-            out_file.flush()
-            os.fsync(out_file)
-            write_lines = []    
+    #     if r_line % 90 == 0:
+    #         out_file_csv.writerows(write_lines)
+    #         out_file.flush()
+    #         os.fsync(out_file)
+    #         write_lines = []    
+
+
+
+
