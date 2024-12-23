@@ -766,6 +766,19 @@ def plot_variable_order_distribution(lambda_terms, save_as=""):
     
     plt.savefig(save_as)
 
+def preprocess_sent(sentence):
+    words = " ".join(sentence).replace("...}"," ...}").replace("{..","{. .").replace("NP.","NP .").replace("NP—","NP —").replace(",}"," ,}").\
+    replace("'re"," 're").replace("'s"," 's").replace("'ve}"," 've}").replace("!}"," !}").replace("?}"," ?}").replace("n't"," n't").\
+    replace("'m}"," 'm}").replace("{. ..","{...").replace("{——}","{— —}").replace("{--—}","{- -—}").replace("St.", "St").strip().split()
+    
+    words = [word[:-1].strip("\u200e") if word[-1] == "}" else word for i, word in enumerate(words) if i % 2 != 0] # -1 to get rid of the } at the end. sentences in PTB tokenized form with POS tagging - {Tag word}
+
+    for i, word in enumerate(words):
+        if "." in word and len(list(set(word))) != 1: words[i] = words[i].replace(".", "")
+
+    tokens = TOKENIZER(" ".join(words), add_special_tokens=True, return_tensors="pt", return_offsets_mapping=True)
+    return tokens
+
 
 def create_out_tensor(sentence, lambda_term):
     # group the offsets into a word dictionary
@@ -775,28 +788,10 @@ def create_out_tensor(sentence, lambda_term):
     # {(3, 6): (8, 11)}
 
     # then for every offset that is not in the map, tokenize it as a character or word as suitable
-    # for every offset in lambda term that is in the map, replace w the tokens in the corresponding list as value in the first map
+    # for every offset in lambda term that is in the map, replace w the tokens in the corresponding list as value in the first map\
 
-    # making the first map
-    # t = TreebankWordTokenizer()
-    # words = t.tokenize(sentence)
-    words = " ".join(sentence).replace("...}"," ...}").replace("{..","{. .").replace("NP.","NP .").replace("NP—","NP —").replace(",}"," ,}").\
-    replace("'re"," 're").replace("'s"," 's").replace("'ve}"," 've}").replace("!}"," !}").replace("?}"," ?}").replace("n't"," n't").\
-    replace("'m}"," 'm}").replace("{. ..","{...").replace("{——}","{— —}").replace("{--—}","{- -—}").replace("St.", "St").strip().split()
+    tokens = preprocess_sent(sentence)
     
-    words = [word[:-1].strip("\u200e") if word[-1] == "}" else word for i, word in enumerate(words) if i % 2 != 0] # -1 to get rid of the } at the end. sentences in PTB tokenized form with POS tagging - {Tag word}
-
-    ind_letters = set()
-
-    for i, word in enumerate(words):
-        if "." in word and len(list(set(word))) != 1: words[i] = words[i].replace(".", "")
-        if len(word) == 1 and word.isalpha(): ind_letters.add(i)
-    
-    replacement = "J"
-    while replacement in words:
-        replacement = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[random.randint(0, 25)]
-
-    tokens = TOKENIZER(" ".join(words), add_special_tokens=True, return_tensors="pt", return_offsets_mapping=True)
     word_mapping = tokens.words()
     word_mapping[0] = -1
     word_mapping[-1] = -1
@@ -807,6 +802,10 @@ def create_out_tensor(sentence, lambda_term):
     acc = ""
     how_many = 0
     prev_end =1000
+
+    replacement = "J"
+    while replacement in words:
+        replacement = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[random.randint(0, 25)]
 
     # print(lambda_term)
     repl_words = words.copy()
@@ -848,7 +847,8 @@ def create_out_tensor(sentence, lambda_term):
     # assert len(re.findall(r"<w_\d+>", lambda_term)) == 0, f"Invalid lambda term {lambda_term}\n{words}"
     weird_dots = re.findall(r"<w_\d+>", lambda_term)
     for i, dot in enumerate(weird_dots):
-        lambda_term = lambda_term.replace(dot, f"..._{i+10000}")
+        number = int(dot[3:-1])
+        lambda_term = lambda_term.replace(dot, f"{words[number]}_{number}")
 
     for char in lambda_term:
         if char in "( )":
@@ -867,10 +867,16 @@ def create_out_tensor(sentence, lambda_term):
 
     #first compile a list of variable positions:
     var_logs = []
+    var_nos = []
     lambda_pattern = re.compile(r"λ\w+_\d+\.")
     for i, element in enumerate(lambda_term_list):
         if lambda_pattern.match(element) is not None:
             var_logs.append(element[1:-1])
+            var_nos.append(int(element[element.rfind("_")+1:-1]))
+            #check if this variable occurs before it shud -- prolly is a word then
+            if element[1:-1] in lambda_term_list[:i]:
+                #rename it slightly differently
+                lambda_term_list[lambda_term_list.index(element[1:-1])] = lambda_term_list[lambda_term_list.index(element[1:-1])]+"11"
 
     # words[3] = "lamda"
     for w, word in enumerate(words):
@@ -1006,7 +1012,7 @@ if __name__ == "__main__":
     import os
     from tqdm import tqdm
     import matplotlib.pyplot as plt
-    df = pd.read_csv("data/input_sentences.csv", header=None)
+    df = pd.read_csv("lambdaBERT/data/input_sentences.csv", header=None)
     sentences = len(df)     
 
     #8147 bad - devanagiri script
@@ -1014,8 +1020,10 @@ if __name__ == "__main__":
     #choose 10 random indices from 0 to range(sentences)
     indices = random.sample(range(sentences), 10) #-- debugging
     terms =[]
-    for i in tqdm(range(sentences)):
+    for i in tqdm(range(88790+40000+2902+930+4, 88790+60000)):
     # for i in indices:
+    #40000+2902+930+5
+     #erorr in 929, 
         # error here: i+9 + 56+75+477+25, i+9 + 56+75+477+26+128, i+9 + 56+75+477+26+129+278, i+9 + 56+75+477+26+129+279+111+724, i+9 + 56+75+477+26+129+279+111+725+482, i+9 + 56+75+477+26+129+279+111+725+483+6606+3757, i+9 + 56+75+477+26+129+279+111+725+483+6606+3757+157, i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5809, i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5809+4, i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5809+4+2113, i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5810+5+2114 + 2626,i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5810+5+2114 + 2626 + 1396,i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5810+5+2114+2627+1398+200, i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5810+5+2114+2627+1398+200+3440, +4453, +28,+10447, +5700
         gen_sent = eval(df.iloc[i, 1])
 
