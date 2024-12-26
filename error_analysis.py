@@ -229,51 +229,51 @@ def model_inference(model, dataloader):
                 for j in range(4):
                     confusion_matrix[i, j] += ((classified_class_ == j) & (gt_cls_mask == i)).sum().detach().cpu()
 
-            #probability of true sequence:
-            # pr = torch.nn.Softmax(dim=-1)(classified_class).max(dim=-1)[0].prod(dim=-1).squeeze(0).item()
-            pr = torch.nn.Softmax(dim=-1)(classified_class)
-            # print(pr)
-            #pr = torch.gather(pr, -1, gt_cls_mask.unsqueeze(-1)).squeeze(-1)
-            pr = torch.gather(pr, -1, pr.argmax(-1,keepdim=True)).squeeze(-1)
+            # #probability of true sequence:
+            # # pr = torch.nn.Softmax(dim=-1)(classified_class).max(dim=-1)[0].prod(dim=-1).squeeze(0).item()
+            # pr = torch.nn.Softmax(dim=-1)(classified_class)
+            # # print(pr)
+            # #pr = torch.gather(pr, -1, gt_cls_mask.unsqueeze(-1)).squeeze(-1)
+            # pr = torch.gather(pr, -1, pr.argmax(-1,keepdim=True)).squeeze(-1)
             
-            #Write the written outputs:
-            out = out[0].argmax(-1) if len(out.shape) == 3 else out[0]
-            outs.append([list(zip(gt_cls_mask.squeeze(0).tolist(), pr.squeeze(0).tolist())), get_out_list(out, classified_class, var_reg), pr.prod(dim=-1).squeeze(0).item()])
+            # #Write the written outputs:
+            # out = out[0].argmax(-1) if len(out.shape) == 3 else out[0]
+            # outs.append([list(zip(gt_cls_mask.squeeze(0).tolist(), pr.squeeze(0).tolist())), get_out_list(out, classified_class, var_reg), pr.prod(dim=-1).squeeze(0).item()])
             
-            beam_size = 12
-            x, y, z, p, allprobs_seq = get_discrete_output(in_embs, model, tokenized=True, last=False, max_len=200, unfiltered_class=True, beam_size=beam_size, reference=target)
-            if beam_size <= 1: outs.append([y.argmax(-1).squeeze(0).tolist(), get_out_list(x, y, z), p])
-            else:
-                for jkl in range(len(y)):
-                    outs.append([list(zip(y[jkl].tolist(), allprobs_seq[jkl].tolist())) , get_out_list(x[jkl], y[jkl], z[jkl]), p[jkl].item()])
-                outs.append(["", "", ""]) # emmpty divider
+            # beam_size = 12
+            # x, y, z, p, allprobs_seq = get_discrete_output(in_embs, model, tokenized=True, last=False, max_len=200, unfiltered_class=True, beam_size=beam_size, reference=target)
+            # if beam_size <= 1: outs.append([y.argmax(-1).squeeze(0).tolist(), get_out_list(x, y, z), p])
+            # else:
+            #     for jkl in range(len(y)):
+            #         outs.append([list(zip(y[jkl].tolist(), allprobs_seq[jkl].tolist())) , get_out_list(x[jkl], y[jkl], z[jkl]), p[jkl].item()])
+            #     outs.append(["", "", ""]) # emmpty divider
 
-            if not beam_size: 
-                classified_class_ = torch.nn.Softmax(dim=-1)(classified_class).cpu()
-                word_prs.append(classified_class_[0, :, 0])
-                var_prs.append(classified_class_[0, :, 1])
-                lambda_prs.append(classified_class_[0, :, 2])
-                app_prs.append(classified_class_[0, :, 3])
+            # if not beam_size: 
+            #     classified_class_ = torch.nn.Softmax(dim=-1)(classified_class).cpu()
+            #     word_prs.append(classified_class_[0, :, 0])
+            #     var_prs.append(classified_class_[0, :, 1])
+            #     lambda_prs.append(classified_class_[0, :, 2])
+            #     app_prs.append(classified_class_[0, :, 3])
 
-                y = torch.nn.Softmax(dim=-1)(y).cpu()
-                word_ps.append(y[0, :, 0])
-                var_ps.append(y[0, :, 1])
-                lambda_ps.append(y[0, :, 2])
-                app_ps.append(y[0, :, 3])
+            #     y = torch.nn.Softmax(dim=-1)(y).cpu()
+            #     word_ps.append(y[0, :, 0])
+            #     var_ps.append(y[0, :, 1])
+            #     lambda_ps.append(y[0, :, 2])
+            #     app_ps.append(y[0, :, 3])
 
-            prs.append(pr)
-            ps.append(p) if beam_size <= 1 else ps.extend(p)
-            if k>1: break
+            # prs.append(pr)
+            # ps.append(p) if beam_size <= 1 else ps.extend(p)
+            # if k>1: break
     # #write
     loss = average_loss / count
     print("Average Loss: ", loss)
 
-    csv_file = open("outputs_gahhhh.csv", "w")
-    csv_writer = csv.writer(csv_file)
-    csv_writer.writerows(outs)
-    csv_file.close()
+    # csv_file = open("outputs_gahhhh.csv", "w")
+    # csv_writer = csv.writer(csv_file)
+    # csv_writer.writerows(outs)
+    # csv_file.close()
 
-    plot_teacher_forcing_error(prs, ps, save_as="teaching_forcing_not_last.png")
+    # plot_teacher_forcing_error(prs, ps, save_as="teaching_forcing_not_last.png")
     # mean_probability_measures(word_prs, word_ps, title="Evolution of Word Probabilities", save_as="word_time_notlast.png")
     # mean_probability_measures(var_prs, var_ps, title="Evolution of Var Probabilities", save_as="var_time_notlast.png")
     # mean_probability_measures(lambda_prs, lambda_ps, title="Evolution of Lambda Probabilities", save_as="lmda_time_notlast.png")
@@ -822,11 +822,11 @@ if __name__ == "__main__":
 
 
     #-- CONFUSION MATRIX --
-    # confusion_matrix = model_inference(model, test_dataloader)
-    # plot_confusion_matrix(confusion_matrix, "test")
+    confusion_matrix = model_inference(model, test_dataloader)
+    plot_confusion_matrix(confusion_matrix, "test")
 
-    # confusion_matrix = model_inference(model, valid_dataloader)
-    # plot_confusion_matrix(confusion_matrix, "valid")
+    confusion_matrix = model_inference(model, valid_dataloader)
+    plot_confusion_matrix(confusion_matrix, "valid")
 
     confusion_matrix = model_inference(model, dataloader)
     plot_confusion_matrix(confusion_matrix)
