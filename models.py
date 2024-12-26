@@ -68,7 +68,8 @@ class TransformerDecoderStack(nn.Module):
         self.d_model = d_model
         self.num_layers = num_layers
         self.num_heads = num_heads
-        self.initial_forward = nn.Linear(768, d_model) if not self.custom else nn.Linear(d_model, d_model)
+        self.initial_forward_out = nn.Linear(768, d_model) if not self.custom else nn.Linear(d_model, d_model)
+        self.initial_forward_emb = nn.Linear(768, d_model)
         self.final_forward = nn.Linear(d_model, 768)
         self.classifier_forward = nn.Linear(d_model, 4)
         self.reg_forward1 = nn.Linear(d_model, d_model)
@@ -90,13 +91,13 @@ class TransformerDecoderStack(nn.Module):
 
         if not self.custom:
             outputs = seq
-            outputs = self.pe_embed(self.initial_forward(outputs)) # does th add in the pemebed forward
+            outputs = self.pe_embed(self.initial_forward_out(outputs)) # does th add in the pemebed forward
             outputs += self.syntax_embed(seq_syntax)
         else:
             outputs = self.syntax_embed(seq_syntax)
-            outputs = self.pe_embed(self.initial_forward(outputs))
+            outputs = self.pe_embed(self.initial_forward_out(outputs))
 
-        emb = self.initial_forward(emb)
+        emb = self.initial_forward_emb(emb)
         tgt_mask = torch.nn.Transformer.generate_square_subsequent_mask(seq.size(1)).to(emb.device)
 
         emb *= (~mb_pad.unsqueeze(-1))
@@ -142,7 +143,7 @@ class ShuffledTransformerStack(L.LightningModule):
 
             return self.common_loss([criterion, class_criterion], [out, classified_class, var_reg], target,
                                lambda_index_mask, app_index_mask, var_index_mask_no, stop_mask, pad_mask, split="valid", 
-                               bos=target_embs[:, :1, :], in_embs=in_embs, sent_pad_mask=sent_pad_mask)
+                               bos=None, in_embs=in_embs, sent_pad_mask=sent_pad_mask)
 
     def common_loss(self, criteria, out, target, lambda_index_mask, app_index_mask, var_index_mask_no, stop_mask, pad_mask, split="train",
                      bos=None, in_embs=None, sent_pad_mask=None):
@@ -164,7 +165,7 @@ class ShuffledTransformerStack(L.LightningModule):
         
         #mse on lambdas
         if out[lambda_index_mask].reshape(-1, out.size(-1)).shape[0] != 0:
-            print("tf " ,F.softmax(classified_class, dim=-1)[0, :20])
+            # print("tf " ,F.softmax(classified_class, dim=-1)[0, :20])
             gt_cls_mask = var_index_mask_no.type(torch.bool) + 2*lambda_index_mask.type(torch.bool) + 3*app_index_mask.type(torch.bool) #+ 4*stop_mask.type(torch.bool) #because lambda's class is 2
             classifier_loss = class_criterion(classified_class.view(-1, 4), gt_cls_mask.view(-1))
             loss += classifier_loss
@@ -227,7 +228,7 @@ class ShuffledTransformerStack(L.LightningModule):
                         out_start = torch.cat([out_start[:, :1], o], dim=1)
                 
                 o, classified_class, _ = self.model(out_start, seq_syntax, in_embs, sent_pad_mask, self.device)
-                print("inference", F.softmax(classified_class, dim=-1)[0, :20])
+                # print("inference", F.softmax(classified_class, dim=-1)[0, :20])
                 time.sleep(60)
                 classifier_loss = class_criterion(classified_class.view(-1, 4), gt_cls_mask.view(-1))
                 loss += classifier_loss
@@ -255,7 +256,7 @@ class ShuffledTransformerStack(L.LightningModule):
         #offset the masks by one 
         lambda_index_mask, app_index_mask, var_index_mask_no, stop_mask, pad_mask = (lambda_index_mask[:, 1:], app_index_mask[:, 1:], var_index_mask_no[:, 1:], stop_mask[:, 1:], pad_mask[:, 1:])
         loss = self.common_loss([criterion, class_criterion], [out, classified_class, var_reg], target,
-                               lambda_index_mask, app_index_mask, var_index_mask_no, stop_mask, pad_mask, split="train",bos=target_embs[:, :1, :], in_embs=in_embs, sent_pad_mask=sent_pad_mask)
+                               lambda_index_mask, app_index_mask, var_index_mask_no, stop_mask, pad_mask, split="train",bos=None, in_embs=in_embs, sent_pad_mask=sent_pad_mask)
 
         # roll out
         out, target = out[:, :-1, :], target[:, 1:, :]
@@ -273,8 +274,8 @@ class ShuffledTransformerStack(L.LightningModule):
         optimizer = optim.AdamW(self.parameters(), lr=1e-4)
         return optimizer
     
-def load_model(path=None):
-    model = TransformerDecoderStack(4, 384, 8, 3072)
+def load_model(path=None, custom=False):
+    model = TransformerDecoderStack(4, 384, 8, 3072, custom=custom)
     if path:
         checkpoint = torch.load(args.model_path)
         model_weights = {k.replace("model.", ""): v for k, v in checkpoint["state_dict"].items() if k.startswith("model.")}
@@ -283,7 +284,7 @@ def load_model(path=None):
 
 def main(hparams=None, load_chckpnt=False, **kwargs):
     
-    if load_chckpnt: model = load_model(load_chckpnt)
+    if load_chckpnt: model = load_model(load_chckpnt, custom=kwargs["custom_t"])
     else: model = TransformerDecoderStack(4, 384, 8, 3072, custom=kwargs["custom_t"])
 
     model = ShuffledTransformerStack(model, t_force = kwargs["t_force"], t_damp=kwargs["t_damp"])
@@ -321,7 +322,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     SAVE_DIR = args.save_dir
     torch.manual_seed(0)
-    assert (args.model_is_discrete and args.model_path) or (args.model_path) or not (args.model_is_discrete or args.model_path), "model path for discrete model to be provided"
+    #assert (args.model_is_discrete and args.model_path) or (args.model_path) or not (args.model_is_discrete or args.model_path), "model path for discrete model to be provided"
     main(load_chckpnt=args.model_path,
           t_force=args.t_force, t_damp=args.t_damp, batch_size=args.batch_size, custom_t=args.custom_transformer,
             bert_is_last=args.bert_is_last)
