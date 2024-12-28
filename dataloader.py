@@ -5,7 +5,7 @@ from torch.utils.data import Dataset, DataLoader
 import random
 import pandas as pd
 
-from tokenization import TOKENIZER, BERT_MODEL, create_out_tensor
+from tokenization import TOKENIZER, BERT_MODEL, create_out_tensor, preprocess_sent
 from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence
 
 import traceback
@@ -13,7 +13,7 @@ import traceback
 #create a directory where the key is a csv. each row has first column as the raw text sentence, and the second col being the 
 # path to the file that stores all its lambda terms
 
-DATA_PATH = "/home/mishaalk/scratch/lambdaBERT/data/"
+DATA_PATH = "/w/150/lambda_squad/lambdaBERT/data/"
 BOS_TOKEN_LAST = [[[ 6.6404e-03,  1.2032e-01, -2.5759e-02,  1.1922e-01,  1.6584e-01,
         -2.4184e-02,  4.3246e-02, -9.4100e-02,  4.8467e-02,  1.7669e-01,
         -7.7217e-02, -2.4837e-02, -1.4056e-01,  1.7926e-01, -6.4828e-01,
@@ -633,18 +633,24 @@ SEP_TOKEN = [[[ 1.3052e+00, -8.8454e-01,  3.9420e+00,  2.9212e+00, -7.4760e-01,
          2.0673e-02,  4.3746e+00,  1.7054e+00]]]
     
 class ShuffledLambdaTermsDataset(Dataset):
-    def __init__(self, input_sentences_file, main_dir, transform=None, target_transform=None, last=False):
+    def __init__(self, input_sentences_file, main_dir, transform=None, target_transform=None, last=False, inference=False):
         self.main_dir = main_dir
         self.input_sentences = pd.read_csv(input_sentences_file)
         self.transform = transform
         self.target_transform = target_transform
         self.last = last
+        self.inference = inference
     
     def __len__(self):
         return len(self.input_sentences)
 
     def __getitem__(self, index):
         path = self.input_sentences.iloc[index, 2]
+
+        if self.inference:
+            gen_sent = self.input_sentences.iloc[index, 1]
+            sent = preprocess_sent(gen_sent)
+
         if type(path) is not str: path = path.name
         path = DATA_PATH + path[len("lambdaBERT/data/"):]
         with open(path, 'r') as f:
@@ -682,21 +688,28 @@ class ShuffledLambdaTermsDataset(Dataset):
         stop_index_mask[-1] = 1
 
         # print("insnide", TOKENIZER.convert_ids_to_tokens([101 if t <0 else t for t in target_tokens]))
-        
+        if self.inference:
+            return sent,  sent_embs if not self.last else sent_embs_last, target_embs if not self.last else target_embs_last, target_tokens, lambda_index_mask, var_index_mask_no, app_index_mask, stop_index_mask
         return sent_embs if not self.last else sent_embs_last, target_embs if not self.last else target_embs_last, target_tokens, lambda_index_mask, var_index_mask_no, app_index_mask, stop_index_mask
 
 def shuffled_collate(batch):
-    sent_embedding, lambda_term_embedding, lambda_term_tokens, lambda_mask, var_mask, app_mask, stop_mask = zip(*batch)
+    try:
+        sent_embedding, lambda_term_embedding, lambda_term_tokens, lambda_mask, var_mask, app_mask, stop_mask = zip(*batch)
+        sent = None
+    except: 
+        sent, sent_embedding, lambda_term_embedding, lambda_term_tokens, lambda_mask, var_mask, app_mask, stop_mask = zip(*batch)
     
     sent_embedding, lambda_term_embedding, lambda_term_tokens, lambda_mask, var_mask, app_mask, stop_mask = [sent.squeeze(0) for sent in sent_embedding], [lambda_term.squeeze(0) for lambda_term in lambda_term_embedding], [torch.tensor(sent, dtype=torch.int64) for sent in lambda_term_tokens],[torch.tensor(sent, dtype=torch.bool).squeeze(0) for sent in lambda_mask], [torch.tensor(var, dtype=torch.int64).squeeze(0) for var in var_mask], [torch.tensor(app, dtype=torch.bool).squeeze(0) for app in app_mask], [torch.tensor(st, dtype=torch.bool).squeeze(0) for st in stop_mask]
+    if sent is not None: sent = [sent.squeeze(0) for sent in sent]
+
     sent_embedding_batched = pad_sequence(sent_embedding, batch_first=True, padding_value = 15)
-    
     lambda_term_embedding_batched = pad_sequence(lambda_term_embedding, batch_first=True, padding_value = 15)
     lambda_term_tokens_batched = pad_sequence(lambda_term_tokens, batch_first=True, padding_value = 102) # all pads are stops
     var_mask_batched = pad_sequence(var_mask, batch_first=True, padding_value = 0)
     lambda_mask_batched = pad_sequence(lambda_mask, batch_first=True, padding_value = 0)
     app_mask_batched = pad_sequence(app_mask, batch_first=True, padding_value = 0)
     stop_mask_batched = pad_sequence(stop_mask, batch_first=True, padding_value = 1) # all pads are stops
+    if sent: sent_batched = pad_sequence(sent, batch_first=True, padding_value = 102)
 
     lambda_pad_mask = lambda_term_embedding_batched == 15
     lambda_term_embedding_batched = lambda_term_embedding_batched.masked_fill(lambda_pad_mask, 0)
@@ -709,6 +722,8 @@ def shuffled_collate(batch):
     sent_embedding_batched = sent_embedding_batched.masked_fill(sent_pad_mask, 0)
     sent_pad_mask = sent_pad_mask.sum(-1) >= 1 #similarly, anything thats a padded token position is 0
     # sent_pad_mask = sent_embedding_batched.sum(-1) >= 1
+    if sent is not None:
+        return sent_batched, sent_embedding_batched, lambda_term_embedding_batched, lambda_term_tokens_batched, var_mask_batched, lambda_mask_batched, app_mask_batched, stop_mask_batched, lambda_pad_mask, sent_pad_mask
     return sent_embedding_batched, lambda_term_embedding_batched, lambda_term_tokens_batched, var_mask_batched, lambda_mask_batched, app_mask_batched, stop_mask_batched, lambda_pad_mask, sent_pad_mask
 
 import numpy
@@ -717,11 +732,11 @@ def seed_worker(worker_id):
     numpy.random.seed(worker_seed)
     random.seed(worker_seed)
 
-def data_init(batch_size, last=False):
+def data_init(batch_size, last=False, inference=False):
     
     #load in the tokenizer
     # tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
-    dataset = ShuffledLambdaTermsDataset(DATA_PATH + 'input_sentences.csv', DATA_PATH + 'lambda_terms/', last=last)
+    dataset = ShuffledLambdaTermsDataset(DATA_PATH + 'input_sentences.csv', DATA_PATH + 'lambda_terms/', last=last, inference=inference)
     #split the datset 70 20 10 split
     train_size = int(0.7 * len(dataset))
     val_size = int(0.2 * len(dataset))
