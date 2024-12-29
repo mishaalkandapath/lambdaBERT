@@ -648,8 +648,9 @@ class ShuffledLambdaTermsDataset(Dataset):
         path = self.input_sentences.iloc[index, 2]
 
         if self.inference:
-            gen_sent = self.input_sentences.iloc[index, 1]
-            sent = preprocess_sent(gen_sent)
+            gen_sent = eval(self.input_sentences.iloc[index, 1])
+            sent, _ = preprocess_sent(gen_sent)
+            sent = sent.input_ids
 
         if type(path) is not str: path = path.name
         path = DATA_PATH + path[len("lambdaBERT/data/"):]
@@ -695,12 +696,14 @@ class ShuffledLambdaTermsDataset(Dataset):
 def shuffled_collate(batch):
     try:
         sent_embedding, lambda_term_embedding, lambda_term_tokens, lambda_mask, var_mask, app_mask, stop_mask = zip(*batch)
-        sent = None
+        sents = None
     except: 
-        sent, sent_embedding, lambda_term_embedding, lambda_term_tokens, lambda_mask, var_mask, app_mask, stop_mask = zip(*batch)
+        sents, sent_embedding, lambda_term_embedding, lambda_term_tokens, lambda_mask, var_mask, app_mask, stop_mask = zip(*batch)
     
     sent_embedding, lambda_term_embedding, lambda_term_tokens, lambda_mask, var_mask, app_mask, stop_mask = [sent.squeeze(0) for sent in sent_embedding], [lambda_term.squeeze(0) for lambda_term in lambda_term_embedding], [torch.tensor(sent, dtype=torch.int64) for sent in lambda_term_tokens],[torch.tensor(sent, dtype=torch.bool).squeeze(0) for sent in lambda_mask], [torch.tensor(var, dtype=torch.int64).squeeze(0) for var in var_mask], [torch.tensor(app, dtype=torch.bool).squeeze(0) for app in app_mask], [torch.tensor(st, dtype=torch.bool).squeeze(0) for st in stop_mask]
-    if sent is not None: sent = [sent.squeeze(0) for sent in sent]
+    
+    if sents is not None: sents = [sent.squeeze(0) for sent in sents]
+    assert all(sents[i].shape == sent_embedding[i].shape[:-1] for i in range(len(sents))) , f"sent_embedding shape: {[sent_embedding[i].shape for i in range(len(sent_embedding))]} and sents shape: {[sents[i].shape for i in range(len(sents))]} do not match"
 
     sent_embedding_batched = pad_sequence(sent_embedding, batch_first=True, padding_value = 15)
     lambda_term_embedding_batched = pad_sequence(lambda_term_embedding, batch_first=True, padding_value = 15)
@@ -709,7 +712,7 @@ def shuffled_collate(batch):
     lambda_mask_batched = pad_sequence(lambda_mask, batch_first=True, padding_value = 0)
     app_mask_batched = pad_sequence(app_mask, batch_first=True, padding_value = 0)
     stop_mask_batched = pad_sequence(stop_mask, batch_first=True, padding_value = 1) # all pads are stops
-    if sent: sent_batched = pad_sequence(sent, batch_first=True, padding_value = 102)
+    if sents: sent_batched = pad_sequence(sents, batch_first=True, padding_value = 102)
 
     lambda_pad_mask = lambda_term_embedding_batched == 15
     lambda_term_embedding_batched = lambda_term_embedding_batched.masked_fill(lambda_pad_mask, 0)
@@ -722,7 +725,7 @@ def shuffled_collate(batch):
     sent_embedding_batched = sent_embedding_batched.masked_fill(sent_pad_mask, 0)
     sent_pad_mask = sent_pad_mask.sum(-1) >= 1 #similarly, anything thats a padded token position is 0
     # sent_pad_mask = sent_embedding_batched.sum(-1) >= 1
-    if sent is not None:
+    if sents is not None:
         return sent_batched, sent_embedding_batched, lambda_term_embedding_batched, lambda_term_tokens_batched, var_mask_batched, lambda_mask_batched, app_mask_batched, stop_mask_batched, lambda_pad_mask, sent_pad_mask
     return sent_embedding_batched, lambda_term_embedding_batched, lambda_term_tokens_batched, var_mask_batched, lambda_mask_batched, app_mask_batched, stop_mask_batched, lambda_pad_mask, sent_pad_mask
 

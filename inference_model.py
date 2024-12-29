@@ -22,60 +22,52 @@ SEP_ID=102
 BOS_ID=101
 import time
 
-def get_closest_idx(out_vector, in_vectors):
+def get_closest_idx(out_vector, in_vectors, in_tokens, sep_allowed=True):
     #closest euclidean distance:
-    vecs = (in_vectors - out_vector.unsqueeze(1))**2
+    vecs = (in_vectors - out_vector)**2
     vecs = vecs.sum(dim=-1)
-    best_v_index = vecs.argmin(dim=-1)
+    best_v_indices = vecs.argsort(dim=-1)
+    # print(best_v_indices, in_tokens.shape)
+    cur = in_tokens[best_v_indices[0]]
+    while (cur == SEP_ID and not sep_allowed) or cur == BOS_ID:
+        best_v_indices = best_v_indices[1:]
+        cur = in_tokens[best_v_indices[0]]
+    best_v_index = best_v_indices[0]
     best_vector = in_vectors[list(range(in_vectors.size(0))), best_v_index]
-    return best_vector
+    return best_v_index
 
 class InferenceModel(nn.Module):
     def __init__(self, model):
         super().__init__()
         self.model = model
     
-    @dispatch(torch.Tensor)
-    def forward(self, in_embs, max_len=20, classify=True, beam_size=0, last=False, unfiltered_class=False, reference=None):
-        # NOTE: classify shud be deprecated
-        if beam_size >= 1: 
-            return self.beam_search_inference(in_embs, max_len=max_len, classify=classify, beam_size=beam_size, reference=reference)
-        pr = 1
+    @dispatch(torch.Tensor, torch.Tensor)
+    def forward(self, in_embs, in_tokens, max_len=20, beam_size=0, last=False):
+        if beam_size > 1: 
+            return self.beam_search_inference(in_embs, max_len=max_len, beam_size=beam_size)
+        prs = []
         x = torch.tensor(BOS_TOKEN if not last else BOS_TOKEN_LAST).to(in_embs.device)
-        out_stacked, classified_class_stacked, classified_class_stacked_unfiltered, var_reg_stacked, newest_out = x, torch.tensor([[0]]).long().to(in_embs.device) if classify else None, None, None, None
-        list_out = []
-        while newest_out != 102 and len(list_out) < max_len-1:
+        out_stacked, classified_class_stacked, classified_class_stacked_unfiltered, var_reg_stacked = x, torch.tensor([[0]]).long().to(in_embs.device), None, None
+        best_index = None
+        out_len = 0
+        leftover_words=False
+        while best_index != in_embs.size(1) and len(prs) < max_len-1 and not leftover_words:
             out, classified_class, var_reg = self.model(x, classified_class_stacked, in_embs, mb_pad=torch.zeros(in_embs.shape[:-1]).to(x.device).to(torch.bool), device=x.device)
-            if classify: 
-                pr *= torch.nn.Softmax()(classified_class.view(-1)).max().item()
-                classified_class_ = classified_class.argmax(dim=-1) # CHANGE IF INCLUDING STOP
-            if var_reg_stacked is None:
-                var_reg_stacked = var_reg
-                classified_class_stacked_unfiltered = classified_class
-                out_stacked = torch.cat([out_stacked, find_best_out(out[:, -1], in_embs)], dim=1)
-                classified_class_stacked = torch.cat([classified_class_stacked, classified_class_[:, -1].unsqueeze(1)], dim=1)
-            else:
-                out_stacked = torch.cat([out_stacked, find_best_out(out[:, -1], in_embs)], dim=1)
-                classified_class_stacked = torch.cat([classified_class_stacked, classified_class_[:, -1].unsqueeze(1)], dim=1)
-                var_reg_stacked = torch.cat([var_reg_stacked, var_reg[:, -1].unsqueeze(1)], dim=1)
-                classified_class_stacked_unfiltered = torch.cat([classified_class_stacked_unfiltered, classified_class[:, -1].unsqueeze(1)], dim=1)
+
+            prs.append(torch.nn.Softmax()(classified_class.view(-1)).max().item())
+            classified_class_ = classified_class.argmax(dim=-1) 
             
+            classified_class_stacked_unfiltered = torch.nn.Softmax(dim=-1)(classified_class) if var_reg_stacked is None else torch.cat([classified_class_stacked_unfiltered, torch.nn.Softmax(dim=-1)(classified_class[:, -1]).unsqueeze(1)], dim=1)
+            var_reg_stacked = var_reg if var_reg_stacked is None else torch.cat([var_reg_stacked, var_reg[:, -1].unsqueeze(1)], dim=1)
+            out_stacked = torch.cat([out_stacked, in_embs[:, get_closest_idx(out[0, -1], in_embs[0], in_tokens[0], sep_allowed = leftover_words)].unsqueeze(1)], dim=1)
+            classified_class_stacked = torch.cat([classified_class_stacked, classified_class_[:, -1].unsqueeze(1)], dim=1)
 
-            if not classify: cls_probs = nn.functional.softmax(classified_class[-1, -1], dim=-1)
-            # print(cls_probs.sort(-1))
-            if classified_class_[-1, -1] == 0:
-                sorted_stiff, newest_out = self.linear(out[0, -1, :]).sort(-1)
-                # print(TOKENIZER.convert_ids_to_tokens(newest_out[-5:]))
-                # print(nn.functional.softmax(sorted_stiff, dim=-1)[-5:])
-                #decode and print the top 5:
-
-                newest_out = newest_out[-1].item()
-                list_out.append(newest_out)
-            else:
-                list_out.append(101)
-            # print("->EOW->")
+            if classified_class_[0, -1] == 0:
+                best_index = in_tokens[0, get_closest_idx(out[0, -1], in_embs[0], in_tokens[0])]
+            leftover_words = (torch.count_nonzero(classified_class == 0) == in_embs.size(1)-2)
             x = out_stacked
-        return torch.tensor(list_out).unsqueeze(0) if not classify else torch.tensor(list_out), classified_class_stacked_unfiltered if unfiltered_class else torch.nn.functional.one_hot(classified_class_stacked[:, 1:], num_classes=4), var_reg_stacked, pr
+
+        return out_stacked[:, 1:], classified_class_stacked_unfiltered, var_reg_stacked, torch.tensor(prs)
     
     
     def get_words(self, out, cl): #given an output for a sequence, produce the discrete tokenized sequence

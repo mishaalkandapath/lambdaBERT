@@ -26,17 +26,18 @@ from utils import ThreadLockDict
 
 def get_out_list(out, classified_class, var_reg, in_embs, in_tokens):
     out_list = []
-    for i in range(out.size(1)):
-        if classified_class[0, i] == 0:
-            token_idx = in_tokens[0, get_closest_idx(out[0, i, :])]
+    if len(classified_class.shape) > 1: classified_class = classified_class.argmax(dim=-1).squeeze(0)
+    for i in range(out.size(0)):
+        leftover_words = torch.count_nonzero(classified_class[:i] == 0) == in_embs.size(0) - 2
+        if classified_class[i] == 0:
+            token_idx = in_tokens[get_closest_idx(out[i:i+1, :], in_embs, in_tokens)]
             out_list.append(token_idx)
         else:
             out_list.append(101)
-    
-    if len(classified_class.shape) > 1: classified_class = classified_class.argmax(dim=-1).squeeze(0)
+
     var_reg = var_reg.squeeze(0)
     out_list = TOKENIZER.convert_ids_to_tokens(out_list) 
-    lambda_indices, app_indices, var_indices  = torch.where(classified_class == 2)[0].tolist(), torch.where(classified_class == 3)[0].tolist(), torch.where(classified_class == 1)[0].tolist()
+    lambda_indices, app_indices, var_indices = torch.where(classified_class == 2)[0].tolist(), torch.where(classified_class == 3)[0].tolist(), torch.where(classified_class == 1)[0].tolist()
 
     for i in lambda_indices:
         out_list[i] = "λ"
@@ -83,6 +84,7 @@ def teacher_forcing(model, batch):
 
 def model_inference(model, dataloader, max_len=200, last=False, beam_size=1):
     global DEVICE
+    model.to(DEVICE)
     model.eval()
     confusion_matrix = torch.zeros(4, 4)
     average_loss = 0
@@ -105,11 +107,11 @@ def model_inference(model, dataloader, max_len=200, last=False, beam_size=1):
             pr = torch.gather(pr, -1, pr.argmax(-1,keepdim=True)).squeeze(-1) # teacher-forcing prob -- for true replace with gt_cls_mask
             
             #Write the written outputs:
-            outs.append([list(zip(gt_cls_mask.squeeze(0).tolist(), pr.squeeze(0).tolist())), get_out_list(out, classified_class, var_reg), pr.prod(dim=-1).squeeze(0).item()])
-            out_inf, classified_class_inf, var_reg_inf, probs_inf = out, classified_class, var_reg, pr, prs = model(in_embs, max_len=max_len, last=last, beam_size=beam_size)
+            outs.append([list(zip(gt_cls_mask.squeeze(0).tolist(), pr.squeeze(0).tolist())), get_out_list(out[0], classified_class[0], var_reg[0], in_embs[0], in_tokens[0]), pr.prod(dim=-1).squeeze(0).item()])
+            out_inf, classified_class_inf, var_reg_inf, probs_inf = model(in_embs, in_tokens, max_len=max_len, last=last, beam_size=beam_size)
 
             if beam_size <= 1: 
-                outs.append([classified_class_inf.argmax(-1).squeeze(0).tolist(), get_out_list(out_inf, classified_class_inf, var_reg_inf, in_embs, in_tokens), probs_inf])
+                outs.append([list(zip(classified_class_inf.argmax(-1).squeeze(0).tolist(), classified_class_inf.max(dim=-1)[0].squeeze(0))), get_out_list(out_inf[0], classified_class_inf[0], var_reg_inf[0], in_embs[0], in_tokens[0]), probs_inf.prod().item()])
                 p = probs_inf.prod().item()
             else:
                 p = -1
@@ -117,11 +119,11 @@ def model_inference(model, dataloader, max_len=200, last=False, beam_size=1):
                     total_prob = probs_inf[jkl].prod().item()
                     if total_prob > p:
                         p = total_prob
-                    outs.append([list(zip(classified_class_inf[jkl].tolist(), probs_inf[jkl].tolist())), get_out_list(out_inf[jkl], classified_class_inf[jkl], var_reg_inf[jkl], in_embs, in_tokens), total_prob])
+                    outs.append([list(zip(classified_class_inf[jkl].tolist(), probs_inf[jkl].tolist())), get_out_list(out_inf[jkl], classified_class_inf[jkl], var_reg_inf[jkl], in_embs[0], in_tokens[0]), total_prob])
                 outs.append(["", "", ""]) # emmpty divider
 
             prs.append(pr)
-            ps.append(prs)
+            ps.append(p)
             if k>1: break
     # #write
     loss = average_loss / count
@@ -156,6 +158,8 @@ if __name__ == "__main__":
     os.environ["CUDA_VISIBLE_DEVICES"] = "1"
     os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
+    DEVICE = torch.device("cpu") if args.cpu else torch.device("cuda")
+
     #load model
     model = TransformerDecoderStack(4, 384, 8, 3072, custom=args.custom)
     checkpoint = torch.load(args.model_path)
@@ -164,54 +168,57 @@ if __name__ == "__main__":
     model.load_state_dict(model_weights)
 
     model = InferenceModel(model)
+    train_dataloader, valid_dataloader, test_dataloader = dataloader.data_init(1, last=args.last, inference=True)
+    
+    model_inference(model, train_dataloader, max_len=200, last=args.last, beam_size=args.beam_size)
 
-    # model = ShuffledTransformerStack.load_from_checkpoint(args.model_path, model).model
-    DEVICE = torch.device("cpu") if args.cpu else torch.device("cuda")
-    model = model.to(DEVICE)
+    # # model = ShuffledTransformerStack.load_from_checkpoint(args.model_path, model).model
+    # DEVICE = torch.device("cpu") if args.cpu else torch.device("cuda")
+    # model = model.to(DEVICE)
 
-    # --LOAD DATA
-    dataloader, valid_dataloader, test_dataloader = dataloader.data_init(1, last=args.last)
+    # # --LOAD DATA
+    # dataloader, valid_dataloader, test_dataloader = dataloader.data_init(1, last=args.last)
 
-    # --DISCRETE OUTPUT SAMPLES
-    lines = pd.read_csv("data/input_sentences.csv", header=None)
-    out_file = open("data/output_samples.csv", "a")
-    out_file_csv = csv.writer(out_file)
+    # # --DISCRETE OUTPUT SAMPLES
+    # lines = pd.read_csv("data/input_sentences.csv", header=None)
+    # out_file = open("data/output_samples.csv", "a")
+    # out_file_csv = csv.writer(out_file)
 
-    # rand_lines = random.choices(range(len(lines)))
-    write_lines = []
-    for r_line in tqdm.tqdm(range(0, len(lines), 15)):
-        w_words = []
-        for rand_line in range(r_line, min(r_line+15, len(lines))):
-            line = eval(lines.iloc[rand_line, 1])
-            target_path = lines.iloc[rand_line, 2][11:]
-            target_text = open(target_path, "r").readlines()[0]
-            words = " ".join(line).replace("...}"," ...}").replace("{..","{. .").replace("NP.","NP .").replace("NP—","NP —").replace(",}"," ,}").\
-                replace("'re"," 're").replace("'s"," 's").replace("'ve}"," 've}").replace("!}"," !}").replace("?}"," ?}").replace("n't"," n't").\
-                replace("'m}"," 'm}").replace("{. ..","{...").replace("{——}","{— —}").replace("{--—}","{- -—}").replace("St.", "St").split()
-            words = [word[:-1] for i, word in enumerate(words) if i % 2 != 0]
-            words = " ".join(words)
+    # # rand_lines = random.choices(range(len(lines)))
+    # write_lines = []
+    # for r_line in tqdm.tqdm(range(0, len(lines), 15)):
+    #     w_words = []
+    #     for rand_line in range(r_line, min(r_line+15, len(lines))):
+    #         line = eval(lines.iloc[rand_line, 1])
+    #         target_path = lines.iloc[rand_line, 2][11:]
+    #         target_text = open(target_path, "r").readlines()[0]
+    #         words = " ".join(line).replace("...}"," ...}").replace("{..","{. .").replace("NP.","NP .").replace("NP—","NP —").replace(",}"," ,}").\
+    #             replace("'re"," 're").replace("'s"," 's").replace("'ve}"," 've}").replace("!}"," !}").replace("?}"," ?}").replace("n't"," n't").\
+    #             replace("'m}"," 'm}").replace("{. ..","{...").replace("{——}","{— —}").replace("{--—}","{- -—}").replace("St.", "St").split()
+    #         words = [word[:-1] for i, word in enumerate(words) if i % 2 != 0]
+    #         words = " ".join(words)
         
-            w_words.append(words)
+    #         w_words.append(words)
 
-        #parallelize
-        threads = []
-        for i, words in enumerate(w_words):
-            t = threading.Thread(target=parallelize_inference, args=(i, model, words, 200, args.last))
-            threads.append(t)
-            t.start()
+    #     #parallelize
+    #     threads = []
+    #     for i, words in enumerate(w_words):
+    #         t = threading.Thread(target=parallelize_inference, args=(i, model, words, 200, args.last))
+    #         threads.append(t)
+    #         t.start()
         
-        for t in threads:
-            t.join()
+    #     for t in threads:
+    #         t.join()
         
-        for i in range(len(w_words)):
-            write_lines.append([w_words[i], thread_locked_dict[i]])
+    #     for i in range(len(w_words)):
+    #         write_lines.append([w_words[i], thread_locked_dict[i]])
         
-        #clear thread_locked dict:
-        w_words = []
-        thread_locked_dict = ThreadLockDict()
+    #     #clear thread_locked dict:
+    #     w_words = []
+    #     thread_locked_dict = ThreadLockDict()
 
-        if r_line % 90 == 0:
-            out_file_csv.writerows(write_lines)
-            out_file.flush()
-            os.fsync(out_file)
-            write_lines = []    
+    #     if r_line % 90 == 0:
+    #         out_file_csv.writerows(write_lines)
+    #         out_file.flush()
+    #         os.fsync(out_file)
+    #         write_lines = []    

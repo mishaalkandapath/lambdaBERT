@@ -777,7 +777,7 @@ def preprocess_sent(sentence):
         if "." in word and len(list(set(word))) != 1: words[i] = words[i].replace(".", "")
 
     tokens = TOKENIZER(" ".join(words), add_special_tokens=True, return_tensors="pt", return_offsets_mapping=True)
-    return tokens
+    return tokens, words
 
 
 def create_out_tensor(sentence, lambda_term):
@@ -790,7 +790,7 @@ def create_out_tensor(sentence, lambda_term):
     # then for every offset that is not in the map, tokenize it as a character or word as suitable
     # for every offset in lambda term that is in the map, replace w the tokens in the corresponding list as value in the first map\
 
-    tokens = preprocess_sent(sentence)
+    tokens, words = preprocess_sent(sentence)
     
     word_mapping = tokens.words()
     word_mapping[0] = -1
@@ -840,6 +840,7 @@ def create_out_tensor(sentence, lambda_term):
 
     #get the bert embedding:
     representations, last_representations = get_bert_emb(tokens)
+    assert representations.shape[1] == tokens.input_ids.shape[1], f"Shape mismatch {representations.shape} {tokens.input_ids.shape}"
 
     #ptb tokenize the lambda term 
     lambda_term_list = []
@@ -1012,7 +1013,7 @@ if __name__ == "__main__":
     import os
     from tqdm import tqdm
     import matplotlib.pyplot as plt
-    df = pd.read_csv("lambdaBERT/data/input_sentences.csv", header=None)
+    df = pd.read_csv("data/input_sentences.csv", header=None)
     sentences = len(df)     
 
     #8147 bad - devanagiri script
@@ -1020,7 +1021,7 @@ if __name__ == "__main__":
     #choose 10 random indices from 0 to range(sentences)
     indices = random.sample(range(sentences), 10) #-- debugging
     terms =[]
-    for i in tqdm(range(88790+40000+2902+930+4, 88790+60000)):
+    for i in tqdm(range(88790, 88790+60000)):
     # for i in indices:
     #40000+2902+930+5
      #erorr in 929, 
