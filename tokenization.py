@@ -1008,6 +1008,17 @@ def convert_lambda_tokens(converted_targets, lambda_index_mask, var_index_mask_n
                     converted_targets[i] = "x"+str(var_index_mask_no[i])
     return converted_targets
 
+def make_var_emb(max_vars, d_model=768):
+        #generic positional embeddings
+        emb = torch.zeros((max_vars, d_model)) + torch.arange(1, max_vars+1).unsqueeze(1)
+        denominator = 1000**(torch.arange(0, d_model//2).repeat_interleave(2)/d_model).unsqueeze(0)
+        emb = emb/denominator
+        even_indices = [i for i in range(d_model) if i % 2 == 0]
+        odd_indices = [i for i in range(d_model) if i % 2 != 0]
+        emb[:, even_indices] = torch.sin(emb[:, even_indices])
+        emb[:, odd_indices] = torch.cos(emb[:, odd_indices])
+        return emb
+
 if __name__ == "__main__":
     import pandas as pd
     import os
@@ -1021,26 +1032,40 @@ if __name__ == "__main__":
     #choose 10 random indices from 0 to range(sentences)
     indices = random.sample(range(sentences), 10) #-- debugging
     terms =[]
-    for i in tqdm(range(88790, 88790+60000)):
+    for i in tqdm(range(sentences)):
     # for i in indices:
     #40000+2902+930+5
      #erorr in 929, 
         # error here: i+9 + 56+75+477+25, i+9 + 56+75+477+26+128, i+9 + 56+75+477+26+129+278, i+9 + 56+75+477+26+129+279+111+724, i+9 + 56+75+477+26+129+279+111+725+482, i+9 + 56+75+477+26+129+279+111+725+483+6606+3757, i+9 + 56+75+477+26+129+279+111+725+483+6606+3757+157, i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5809, i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5809+4, i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5809+4+2113, i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5810+5+2114 + 2626,i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5810+5+2114 + 2626 + 1396,i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5810+5+2114+2627+1398+200, i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5810+5+2114+2627+1398+200+3440, +4453, +28,+10447, +5700
-        gen_sent = eval(df.iloc[i, 1])
+        # gen_sent = eval(df.iloc[i, 1])
 
+        # path = df.iloc[i, 2]
+        # path = "/w/150/lambda_squad/lambdaBERT/data/" + path[len("lambdaBERT/data/"):]
+        # with open(path, 'r') as f:
+        #     lambda_terms = f.readlines()[0].strip()
+        # lambda_terms = lambda_terms.replace(")", "")
+        # sent_emb, sent_emb_last, target_emb, target_emb_last, target_tokens, var_mask, lambda_mask, app_mask = create_out_tensor(gen_sent, lambda_terms)
+
+        # # print(" ".join(convert_lambda_tokens(TOKENIZER.convert_ids_to_tokens([101 if t<0 else t for t in target_tokens]), lambda_mask, var_mask, app_mask)))
+
+        # if os.path.exists(f"/w/150/lambda_squad/{df.iloc[i, 2][:-4]}.pt"): 
+        #     #delete it
+        #     os.remove(f"/w/150/lambda_squad/{df.iloc[i, 2][:-4]}.pt")
         path = df.iloc[i, 2]
         path = "/w/150/lambda_squad/lambdaBERT/data/" + path[len("lambdaBERT/data/"):]
-        with open(path, 'r') as f:
-            lambda_terms = f.readlines()[0].strip()
-        lambda_terms = lambda_terms.replace(")", "")
-        sent_emb, sent_emb_last, target_emb, target_emb_last, target_tokens, var_mask, lambda_mask, app_mask = create_out_tensor(gen_sent, lambda_terms)
+        sent_emb, sent_emb_last, target_emb, target_emb_last, target_tokens, var_mask, lambda_mask, app_mask = torch.load(path.replace("txt", "pt"))
+        
+        max_vars = max(var_mask)
+        if max_vars:
+            var_emb = make_var_emb(max_vars)
+            var_index_mask_no_temp = torch.tensor(var_mask)
+            non_zero_values = var_index_mask_no_temp[var_index_mask_no_temp != 0] - 1
+            target_emb[var_index_mask_no_temp != 0] = var_emb[non_zero_values]
+            target_emb_last[var_index_mask_no_temp != 0] = var_emb[non_zero_values]
 
-        # print(" ".join(convert_lambda_tokens(TOKENIZER.convert_ids_to_tokens([101 if t<0 else t for t in target_tokens]), lambda_mask, var_mask, app_mask)))
-
-        if os.path.exists(f"/w/150/lambda_squad/{df.iloc[i, 2][:-4]}.pt"): 
-            #delete it
-            os.remove(f"/w/150/lambda_squad/{df.iloc[i, 2][:-4]}.pt")
         torch.save((sent_emb, sent_emb_last, target_emb, target_emb_last, target_tokens, var_mask, lambda_mask, app_mask), f"/w/150/lambda_squad/{df.iloc[i, 2][:-4]}.pt")
+   
+   
     # print((sentences))
 
     # for i in [67254, 57102, 40593, 43650]:
