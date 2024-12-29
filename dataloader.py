@@ -654,8 +654,6 @@ class ShuffledLambdaTermsDataset(Dataset):
         lambda_terms = lambda_terms.replace(")", "")
         sent_embs, sent_embs_last, target_embs, target_embs_last, target_tokens, var_index_mask_no, lambda_index_mask, app_index_mask = torch.load(path.replace("txt", "pt"))#create_out_tensor(sentence, lambda_terms)
 
-        #attach the CLS and SEP tokens to the start and end of target_embs?
-
         if len(target_embs) == 0:
             if "section_6186/4.txt" in path or "section_4652/5.txt" in path or "section_7065/2.txt" in path or "/section_5020/4.txt" in path:
                 target_embs = torch.Tensor()
@@ -670,7 +668,6 @@ class ShuffledLambdaTermsDataset(Dataset):
             else:
                 raise Exception
 
-        
         #sep token for target embedding:
         target_embs = torch.cat([torch.tensor(BOS_TOKEN).squeeze(0), target_embs, torch.tensor(SEP_TOKEN).squeeze(0)], dim=0)
         target_embs_last = torch.cat([torch.tensor(BOS_TOKEN_LAST).squeeze(0), target_embs_last, torch.tensor(SEP_TOKEN_LAST).squeeze(0)], dim=0)
