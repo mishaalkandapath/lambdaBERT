@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 from models import *
 import dataloader
 import tqdm, csv, random, pandas as pd
-from tokenization import get_bert_emb, TOKENIZER, LAMBDA, OPEN_RRB, BERT_MODEL
+from tokenization import get_bert_emb, TOKENIZER, LAMBDA, LAMBDA_LAST, OPEN_RRB, OPEN_RRB_LAST, BERT_MODEL
 from dataloader import SEP_TOKEN, BOS_TOKEN, BOS_TOKEN_LAST
 
 import torch 
@@ -22,16 +22,19 @@ SEP_ID=102
 BOS_ID=101
 import time
 
-def get_closest_idx(out_vector, in_vectors, in_tokens, sep_allowed=True):
+def get_closest_idx(out_vector, in_vectors, in_tokens, sep_allowed=True, prejudice_tokens=None):
     #closest euclidean distance:
     vecs = (in_vectors - out_vector)**2
     vecs = vecs.sum(dim=-1)
     best_v_indices = vecs.argsort(dim=-1)
     # print(best_v_indices, in_tokens.shape)
     cur = in_tokens[best_v_indices[0]]
-    while (cur == SEP_ID and not sep_allowed) or cur == BOS_ID:
+    checker = [SEP_ID]
+    while (cur.item() in checker and not sep_allowed) or cur == BOS_ID:
         best_v_indices = best_v_indices[1:]
         cur = in_tokens[best_v_indices[0]]
+        if prejudice_tokens: checker = prejudice_tokens
+
     best_v_index = best_v_indices[0]
     best_vector = in_vectors[list(range(in_vectors.size(0))), best_v_index]
     return best_v_index
@@ -42,11 +45,11 @@ class InferenceModel(nn.Module):
         self.model = model
     
     @dispatch(torch.Tensor, torch.Tensor)
-    def forward(self, in_embs, in_tokens, max_len=20, beam_size=0, last=False):
+    def forward(self, in_embs, in_tokens, max_len=20, beam_size=0, last=False, bos=None, reference_target=None):
         if beam_size > 1: 
             return self.beam_search_inference(in_embs, max_len=max_len, beam_size=beam_size)
         prs = []
-        x = torch.tensor(BOS_TOKEN if not last else BOS_TOKEN_LAST).to(in_embs.device)
+        x = torch.tensor(BOS_TOKEN if not last else BOS_TOKEN_LAST).to(in_embs.device) if bos is None else bos
         out_stacked, classified_class_stacked, classified_class_stacked_unfiltered, var_reg_stacked = x, torch.tensor([[0]]).long().to(in_embs.device), None, None
         best_index = None
         out_len = 0
@@ -59,12 +62,26 @@ class InferenceModel(nn.Module):
             
             classified_class_stacked_unfiltered = torch.nn.Softmax(dim=-1)(classified_class) if var_reg_stacked is None else torch.cat([classified_class_stacked_unfiltered, torch.nn.Softmax(dim=-1)(classified_class[:, -1]).unsqueeze(1)], dim=1)
             var_reg_stacked = var_reg if var_reg_stacked is None else torch.cat([var_reg_stacked, var_reg[:, -1].unsqueeze(1)], dim=1)
-            out_stacked = torch.cat([out_stacked, in_embs[:, get_closest_idx(out[0, -1], in_embs[0], in_tokens[0], sep_allowed = leftover_words)].unsqueeze(1)], dim=1)
+            
+            match classified_class_[0, -1].item():
+                case 0:
+                    to_append = in_embs[:, get_closest_idx(out[0, -1], in_embs[0], in_tokens[0], sep_allowed = leftover_words)]
+                case 2: 
+                    to_append = LAMBDA if not last else LAMBDA_LAST
+                    to_append = torch.tensor(to_append)
+                case 3:
+                    to_append = OPEN_RRB if not last else OPEN_RRB_LAST
+                    to_append = torch.tensor(to_append)
+                case _: 
+                    to_append = out[:, -1]
+                    
+            to_append = in_embs[:, get_closest_idx(out[0, -1], in_embs[0], in_tokens[0], sep_allowed = leftover_words)] if classified_class_[0, -1] == 0 else out[:, -1]
+            out_stacked = torch.cat([out_stacked, to_append.unsqueeze(1)], dim=1)
             classified_class_stacked = torch.cat([classified_class_stacked, classified_class_[:, -1].unsqueeze(1)], dim=1)
 
             if classified_class_[0, -1] == 0:
                 best_index = in_tokens[0, get_closest_idx(out[0, -1], in_embs[0], in_tokens[0])]
-            leftover_words = (torch.count_nonzero(classified_class == 0) == in_embs.size(1)-2)
+            leftover_words = (torch.count_nonzero(classified_class_ == 0) == in_embs.size(1)-2)
             x = out_stacked
 
         return out_stacked[:, 1:], classified_class_stacked_unfiltered, var_reg_stacked, torch.tensor(prs)
@@ -81,6 +98,40 @@ class InferenceModel(nn.Module):
                 list_out.append(101)
 
         return list_out
+
+    def beam_search_tokens(self, in_embs, in_tokens, max_len=20, beam_size=1, prejudice_tokens=None, bos=None):
+        self.model.eval()
+        x = BOS_TOKEN_LAST if bos is not None else bos
+        out_stacked, classified_class_stacked, classified_class_stacked_unfiltered, var_reg_stacked = x, torch.tensor([[0]]).long().to(x.device), None, None
+        list_out = []
+        cls_out = []
+        var_out = []
+        prob_list = []
+        probs_list = []
+
+        left_over_words = False
+
+        while out_stacked.size(1) < max_len:
+            out, classified_class, var_reg = self.model(x, classified_class_stacked, in_embs, mb_pad=torch.zeros(in_embs.shape[:-1]).to(x.device).to(torch.bool), device=x.device)
+
+            classified_class = nn.functional.softmax(classified_class, dim=-1)
+
+            if torch.any(classified_class[:, -1].argmax(dim=-1) == 0):
+                # beams
+                pass
+            else: # pass as normal
+                last_prob = classified_class[:, -1].max(dim=-1)[0]
+                prob_list = last_prob # since no beams are added at this point
+                probs_list *= last_prob
+                out_stacked = torch.cat([out_stacked, out[:, -1].unsqueeze(1)], dim=1) # not a word so no need to refine. 
+
+            classified_class_ = classified_class.argmax(dim=-1) 
+            classified_class_stacked_unfiltered = classified_class if var_reg_stacked is None else torch.cat([classified_class_stacked_unfiltered, classified_class[:, -1].unsqueeze(1)], dim=1)
+            var_reg_stacked = var_reg if var_reg_stacked is None else torch.cat([var_reg_stacked, var_reg[:, -1].unsqueeze(1)], dim=1)
+            classified_class_stacked = torch.cat([classified_class_stacked, classified_class_[:, -1].unsqueeze(1)], dim=1)
+
+        x = out_stacked
+        return out_stacked[:, 1:], classified_class_stacked_unfiltered, var_reg_stacked, torch.tensor(probs_list)
 
     def beam_search_inference(self, in_embs, max_len=20, classify=True, beam_size=1, reference=None): # TODO: make beam start from 5 -- number of classes
         self.model.eval()

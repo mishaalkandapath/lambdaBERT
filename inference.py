@@ -48,29 +48,34 @@ def get_out_list(out, classified_class, var_reg, in_embs, in_tokens):
     # time for variables
     var_dict = {}
     for i in var_indices:
-        if len(var_dict) == 0:
-            var_dict[0] = var_reg[i]
+        if len(var_dict) == 0 or out_list[i-1] == "λ": 
             out_list[i] = f"x{len(var_dict)}"
+            var_dict[len(var_dict)] = var_reg[i]
         else:
-            min_sim = 0
-            min_key = 0
-            for key in var_dict:
-                sim = torch.nn.functional.cosine_similarity(var_reg[i], var_dict[key], dim=0)
-                if sim > min_sim:
-                    min_sim = sim
-                    min_key = key
-            if min_sim > 0.9:
-                out_list[i] = f"x{min_key}"
-            else:
-                var_dict[len(var_dict)] = var_reg[i]
-                out_list[i] = f"x{len(var_dict)}"
+            all_vars = list(var_dict.values())
+            #choose the variable w the highest similarity to the current one:
+            sim = torch.nn.functional.cosine_similarity(var_reg[i].unsqueeze(0), torch.stack(all_vars), dim=1)
+            max_sim_index = sim.argmax().item()
+            out_list[i] = f"x{max_sim_index}"
+            # min_sim = 0
+            # min_key = 0
+            # for key in var_dict:
+            #     sim = torch.nn.functional.cosine_similarity(var_reg[i], var_dict[key], dim=0)
+            #     if sim > min_sim:
+            #         min_sim = sim
+            #         min_key = key
+            # if min_sim > 0.99:
+            #     out_list[i] = f"x{min_key}"
+            # else:
+            #     var_dict[len(var_dict)] = var_reg[i]
+            #     out_list[i] = f"x{len(var_dict)}"
     return " ".join(out_list)
 
 def teacher_forcing(model, batch):
     global BOS_TOKEN_LAST, BOS_TOKEN
     (in_tokens, in_embs, target_embs, target_tokens, var_index_mask_no, lambda_index_mask, app_index_mask, stop_mask, pad_mask, sent_pad_mask) = batch
     in_tokens, in_embs, target_embs, target_tokens, var_index_mask_no, lambda_index_mask, app_index_mask, stop_mask, pad_mask, sent_pad_mask = in_tokens.to(DEVICE), in_embs.to(DEVICE), target_embs.to(DEVICE), target_tokens.to(DEVICE), var_index_mask_no.to(DEVICE), lambda_index_mask.to(DEVICE), app_index_mask.to(DEVICE), stop_mask.to(DEVICE), pad_mask.to(DEVICE), sent_pad_mask.to(DEVICE)
-    BOS_TOKEN_LAST = target_embs[0, 0, :].unsqueeze(0).unsqueeze(0)
+    bos = target_embs[0, 0, :].unsqueeze(0).unsqueeze(0)
     seq_syntax = var_index_mask_no.type(torch.bool) + 2*lambda_index_mask.type(torch.bool) + 3*app_index_mask.type(torch.bool) 
     out, classified_class, var_reg = model(target_embs[:, :-1, :], seq_syntax[:, :-1], in_embs, sent_pad_mask) # get_discrete_output(in_embs, model, target_tokens.shape[1])
     target = target_embs[:, 1:, :]
@@ -80,7 +85,7 @@ def teacher_forcing(model, batch):
     gt_cls_mask = var_index_mask_no.type(torch.bool) + 2*lambda_index_mask.type(torch.bool) + 3*app_index_mask.type(torch.bool) #+ 4*stop_mask.type(torch.bool) #because lambda's class is 2
     loss = nn.functional.cross_entropy(classified_class.view(-1, 4), gt_cls_mask.view(-1), reduction="none")
     loss = ((loss) * (0.95 ** (torch.arange(loss.shape[0])).to(gt_cls_mask.device))).mean()# -- discounted loss
-    return loss, out, classified_class, var_reg, gt_cls_mask, in_embs, in_tokens
+    return bos, loss, target, classified_class, var_reg, gt_cls_mask, in_embs, in_tokens
 
 def model_inference(model, dataloader, max_len=200, last=False, beam_size=1):
     global DEVICE
@@ -95,7 +100,7 @@ def model_inference(model, dataloader, max_len=200, last=False, beam_size=1):
     with torch.no_grad():
         pbar = tqdm.tqdm(total=len(dataloader))
         for k, batch in enumerate(dataloader):
-            loss, out, classified_class, var_reg, gt_cls_mask, in_embs, in_tokens = teacher_forcing(model, batch)
+            bos, loss, out, classified_class, var_reg, gt_cls_mask, in_embs, in_tokens = teacher_forcing(model, batch)
 
             average_loss += loss.item()
             count += 1
@@ -108,10 +113,10 @@ def model_inference(model, dataloader, max_len=200, last=False, beam_size=1):
             
             #Write the written outputs:
             outs.append([list(zip(gt_cls_mask.squeeze(0).tolist(), pr.squeeze(0).tolist())), get_out_list(out[0], classified_class[0], var_reg[0], in_embs[0], in_tokens[0]), pr.prod(dim=-1).squeeze(0).item()])
-            out_inf, classified_class_inf, var_reg_inf, probs_inf = model(in_embs, in_tokens, max_len=max_len, last=last, beam_size=beam_size)
+            out_inf, classified_class_inf, var_reg_inf, probs_inf = model(in_embs, in_tokens, max_len=max_len, last=last, beam_size=beam_size, bos=bos, reference_target=out)
 
             if beam_size <= 1: 
-                outs.append([list(zip(classified_class_inf.argmax(-1).squeeze(0).tolist(), classified_class_inf.max(dim=-1)[0].squeeze(0))), get_out_list(out_inf[0], classified_class_inf[0], var_reg_inf[0], in_embs[0], in_tokens[0]), probs_inf.prod().item()])
+                outs.append([list(zip(classified_class_inf.argmax(-1).squeeze(0).tolist(), classified_class_inf.max(dim=-1)[0].squeeze(0).tolist())), get_out_list(out_inf[0], classified_class_inf[0], var_reg_inf[0], in_embs[0], in_tokens[0]), probs_inf.prod().item()])
                 p = probs_inf.prod().item()
             else:
                 p = -1
