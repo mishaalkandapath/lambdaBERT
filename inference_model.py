@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 from models import *
 import dataloader
 import tqdm, csv, random, pandas as pd
-from tokenization import get_bert_emb, TOKENIZER, LAMBDA, LAMBDA_LAST, OPEN_RRB, OPEN_RRB_LAST, BERT_MODEL
+from tokenization import get_bert_emb, TOKENIZER, LAMBDA, LAMBDA_LAST, OPEN_RRB, OPEN_RRB_LAST, BERT_MODEL, make_var_emb
 from dataloader import SEP_TOKEN, BOS_TOKEN, BOS_TOKEN_LAST
 
 import torch 
@@ -22,6 +22,8 @@ SEP_ID=102
 BOS_ID=101
 import time
 
+ALL_VAR_EMBS = make_var_emb(25)
+
 def get_closest_idx(out_vector, in_vectors, in_tokens, sep_allowed=True, prejudice_tokens=None):
     #closest euclidean distance:
     vecs = (in_vectors - out_vector)**2
@@ -39,6 +41,14 @@ def get_closest_idx(out_vector, in_vectors, in_tokens, sep_allowed=True, prejudi
     best_vector = in_vectors[list(range(in_vectors.size(0))), best_v_index]
     return best_v_index
 
+def get_closest_var_idx(out_vector, var_count=0, printing=False):
+    #get the closes euclidean distance vector from all vars
+    global ALL_VAR_EMBS
+    distances = ALL_VAR_EMBS - out_vector.to(ALL_VAR_EMBS.device)
+    distances = (distances ** 2).sum(-1)
+    if printing: print(distances, distances.argmin(), var_count)
+    return distances.argmin()
+
 class InferenceModel(nn.Module):
     def __init__(self, model):
         super().__init__()
@@ -55,27 +65,33 @@ class InferenceModel(nn.Module):
         out_len = 0
         leftover_words=False
         while best_index != in_embs.size(1) and len(prs) < max_len-1 and not leftover_words:
-            out, classified_class, var_reg = self.model(x, classified_class_stacked, in_embs, mb_pad=torch.zeros(in_embs.shape[:-1]).to(x.device).to(torch.bool), device=x.device)
-
+            outs = self.model(x, classified_class_stacked, in_embs, mb_pad=torch.zeros(in_embs.shape[:-1]).to(x.device).to(torch.bool), device=x.device)
+            if len(outs) == 3: out, classified_class, var_reg = outs
+            else: 
+                var_reg = None
+                out, classified_class = outs
             prs.append(torch.nn.Softmax()(classified_class.view(-1)).max().item())
             classified_class_ = classified_class.argmax(dim=-1) 
             
             classified_class_stacked_unfiltered = torch.nn.Softmax(dim=-1)(classified_class) if var_reg_stacked is None else torch.cat([classified_class_stacked_unfiltered, torch.nn.Softmax(dim=-1)(classified_class[:, -1]).unsqueeze(1)], dim=1)
-            var_reg_stacked = var_reg if var_reg_stacked is None else torch.cat([var_reg_stacked, var_reg[:, -1].unsqueeze(1)], dim=1)
+            if var_reg is not None: var_reg_stacked = var_reg if var_reg_stacked is None else torch.cat([var_reg_stacked, var_reg[:, -1].unsqueeze(1)], dim=1)
             
             match classified_class_[0, -1].item():
                 case 0:
                     to_append = in_embs[:, get_closest_idx(out[0, -1], in_embs[0], in_tokens[0], sep_allowed = leftover_words)]
+                case 1:
+                    to_append = ALL_VAR_EMBS[get_closest_var_idx(out[0, -1], var_count=torch.count_nonzero(classified_class_[0] == 1))].unsqueeze(0)  
                 case 2: 
                     to_append = LAMBDA if not last else LAMBDA_LAST
-                    to_append = torch.tensor(to_append)
+                    to_append = torch.tensor(to_append).unsqueeze(0)
                 case 3:
                     to_append = OPEN_RRB if not last else OPEN_RRB_LAST
-                    to_append = torch.tensor(to_append)
+                    to_append = torch.tensor(to_append).unsqueeze(0)
                 case _: 
+                    print("UHHH this shudnt happen")
                     to_append = out[:, -1]
-                    
-            to_append = in_embs[:, get_closest_idx(out[0, -1], in_embs[0], in_tokens[0], sep_allowed = leftover_words)] if classified_class_[0, -1] == 0 else out[:, -1]
+            
+            to_append = to_append.to(x.device)
             out_stacked = torch.cat([out_stacked, to_append.unsqueeze(1)], dim=1)
             classified_class_stacked = torch.cat([classified_class_stacked, classified_class_[:, -1].unsqueeze(1)], dim=1)
 
@@ -146,7 +162,11 @@ class InferenceModel(nn.Module):
 
         while out_stacked.size(1) < max_len:
             # process each beam 
-            out, classified_class, var_reg = self.model(x, classified_class_stacked, in_embs, mb_pad=torch.zeros(in_embs.shape[:-1]).to(x.device).to(torch.bool), device=x.device)
+            outs = self.model(x, classified_class_stacked, in_embs, mb_pad=torch.zeros(in_embs.shape[:-1]).to(x.device).to(torch.bool), device=x.device)
+            if len(outs) == 3: out, classified_class, var_reg = outs
+            else:
+                out, classified_class = outs
+                var_reg = None
             print(nn.functional.softmax(classified_class, dim=-1))
             if out_stacked.size(1) > 11:
                 raise Exception
@@ -261,5 +281,5 @@ class InferenceModel(nn.Module):
 
     @dispatch(torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor)   
     def forward(self, seq, seq_syntax, in_embs, mb_pad):
-        outs, classified_class, var_emb = self.model(seq, seq_syntax, in_embs, mb_pad=mb_pad , device=seq.device)
-        return outs, classified_class, var_emb
+        outs = self.model(seq, seq_syntax, in_embs, mb_pad=mb_pad , device=seq.device)
+        return outs

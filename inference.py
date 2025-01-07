@@ -4,7 +4,7 @@ import dataloader
 import tqdm, csv, random, pandas as pd
 from tokenization import get_bert_emb, TOKENIZER, LAMBDA, OPEN_RRB, BERT_MODEL
 from dataloader import SEP_TOKEN, BOS_TOKEN, BOS_TOKEN_LAST
-from inference_model import InferenceModel, get_closest_idx
+from inference_model import InferenceModel, get_closest_idx, get_closest_var_idx
 
 import torch 
 import torch.nn as nn
@@ -24,7 +24,7 @@ BOS_ID=101
 import time
 from utils import ThreadLockDict
 
-def get_out_list(out, classified_class, var_reg, in_embs, in_tokens):
+def get_out_list(out, classified_class, var_reg, in_embs, in_tokens, dynamic_vars=False):
     out_list = []
     if len(classified_class.shape) > 1: classified_class = classified_class.argmax(dim=-1).squeeze(0)
     for i in range(out.size(0)):
@@ -35,7 +35,7 @@ def get_out_list(out, classified_class, var_reg, in_embs, in_tokens):
         else:
             out_list.append(101)
 
-    var_reg = var_reg.squeeze(0)
+    if dynamic_vars: var_reg = var_reg.squeeze(0)
     out_list = TOKENIZER.convert_ids_to_tokens(out_list) 
     lambda_indices, app_indices, var_indices = torch.where(classified_class == 2)[0].tolist(), torch.where(classified_class == 3)[0].tolist(), torch.where(classified_class == 1)[0].tolist()
 
@@ -46,29 +46,24 @@ def get_out_list(out, classified_class, var_reg, in_embs, in_tokens):
         out_list[i] = "("
     
     # time for variables
-    var_dict = {}
-    for i in var_indices:
-        if len(var_dict) == 0 or out_list[i-1] == "λ": 
-            out_list[i] = f"x{len(var_dict)}"
-            var_dict[len(var_dict)] = var_reg[i]
-        else:
-            all_vars = list(var_dict.values())
-            #choose the variable w the highest similarity to the current one:
-            sim = torch.nn.functional.cosine_similarity(var_reg[i].unsqueeze(0), torch.stack(all_vars), dim=1)
-            max_sim_index = sim.argmax().item()
-            out_list[i] = f"x{max_sim_index}"
-            # min_sim = 0
-            # min_key = 0
-            # for key in var_dict:
-            #     sim = torch.nn.functional.cosine_similarity(var_reg[i], var_dict[key], dim=0)
-            #     if sim > min_sim:
-            #         min_sim = sim
-            #         min_key = key
-            # if min_sim > 0.99:
-            #     out_list[i] = f"x{min_key}"
-            # else:
-            #     var_dict[len(var_dict)] = var_reg[i]
-            #     out_list[i] = f"x{len(var_dict)}"
+    if dynamic_vars:
+        var_dict = {}
+        for i in var_indices:
+            if len(var_dict) == 0 or out_list[i-1] == "λ": 
+                out_list[i] = f"x{len(var_dict)}"
+                var_dict[len(var_dict)] = var_reg[i]
+            else:
+                all_vars = list(var_dict.values())
+                #choose the variable w the highest similarity to the current one:
+                sim = torch.nn.functional.cosine_similarity(var_reg[i].unsqueeze(0), torch.stack(all_vars), dim=1)
+                max_sim_index = sim.argmax().item()
+                out_list[i] = f"x{max_sim_index}"
+    else:
+        for i in var_indices:
+            out_emb = out[i]
+            var_idx = get_closest_var_idx(out_emb, var_count=i)
+            out_list[i] = f"x{var_idx}"
+
     return " ".join(out_list)
 
 def teacher_forcing(model, batch):
@@ -77,10 +72,20 @@ def teacher_forcing(model, batch):
     in_tokens, in_embs, target_embs, target_tokens, var_index_mask_no, lambda_index_mask, app_index_mask, stop_mask, pad_mask, sent_pad_mask = in_tokens.to(DEVICE), in_embs.to(DEVICE), target_embs.to(DEVICE), target_tokens.to(DEVICE), var_index_mask_no.to(DEVICE), lambda_index_mask.to(DEVICE), app_index_mask.to(DEVICE), stop_mask.to(DEVICE), pad_mask.to(DEVICE), sent_pad_mask.to(DEVICE)
     bos = target_embs[0, 0, :].unsqueeze(0).unsqueeze(0)
     seq_syntax = var_index_mask_no.type(torch.bool) + 2*lambda_index_mask.type(torch.bool) + 3*app_index_mask.type(torch.bool) 
-    out, classified_class, var_reg = model(target_embs[:, :-1, :], seq_syntax[:, :-1], in_embs, sent_pad_mask) # get_discrete_output(in_embs, model, target_tokens.shape[1])
+    
+    target_tokens[target_tokens == -1] = 0
+    #decode
+    print(TOKENIZER.convert_ids_to_tokens(target_tokens[0].tolist()))
+
+    outs = model(target_embs[:, :-1, :], seq_syntax[:, :-1], in_embs, sent_pad_mask) # get_discrete_output(in_embs, model, target_tokens.shape[1])
+    if len(outs) == 3:
+        out, classified_class, var_reg = outs
+    else: 
+        out, classified_class = outs
+        var_reg = None
     target = target_embs[:, 1:, :]
     lambda_index_mask, app_index_mask, var_index_mask_no, stop_mask, pad_mask = (lambda_index_mask[:, 1:], app_index_mask[:, 1:], var_index_mask_no[:, 1:], stop_mask[:, 1:], pad_mask[:, 1:])
-
+    print(var_index_mask_no)
     #classiifer truth
     gt_cls_mask = var_index_mask_no.type(torch.bool) + 2*lambda_index_mask.type(torch.bool) + 3*app_index_mask.type(torch.bool) #+ 4*stop_mask.type(torch.bool) #because lambda's class is 2
     loss = nn.functional.cross_entropy(classified_class.view(-1, 4), gt_cls_mask.view(-1), reduction="none")
@@ -109,14 +114,15 @@ def model_inference(model, dataloader, max_len=200, last=False, beam_size=1):
 
             # #probability of true sequence:
             pr = torch.nn.Softmax(dim=-1)(classified_class)
-            pr = torch.gather(pr, -1, pr.argmax(-1,keepdim=True)).squeeze(-1) # teacher-forcing prob -- for true replace with gt_cls_mask
+            # pr = torch.gather(pr, -1, pr.argmax(-1,keepdim=True)).squeeze(-1) # teacher-forcing prob -- for true replace with gt_cls_mask
+            pr = torch.gather(pr, -1, gt_cls_mask.unsqueeze(-1)).squeeze(-1) 
             
             #Write the written outputs:
-            outs.append([list(zip(gt_cls_mask.squeeze(0).tolist(), pr.squeeze(0).tolist())), get_out_list(out[0], classified_class[0], var_reg[0], in_embs[0], in_tokens[0]), pr.prod(dim=-1).squeeze(0).item()])
+            outs.append([list(zip(gt_cls_mask.squeeze(0).tolist(), pr.squeeze(0).tolist())), get_out_list(out[0], classified_class[0], var_reg[0] if var_reg is not None else None, in_embs[0], in_tokens[0]), pr.prod(dim=-1).squeeze(0).item()])
             out_inf, classified_class_inf, var_reg_inf, probs_inf = model(in_embs, in_tokens, max_len=max_len, last=last, beam_size=beam_size, bos=bos, reference_target=out)
 
             if beam_size <= 1: 
-                outs.append([list(zip(classified_class_inf.argmax(-1).squeeze(0).tolist(), classified_class_inf.max(dim=-1)[0].squeeze(0).tolist())), get_out_list(out_inf[0], classified_class_inf[0], var_reg_inf[0], in_embs[0], in_tokens[0]), probs_inf.prod().item()])
+                outs.append([list(zip(classified_class_inf.argmax(-1).squeeze(0).tolist(), classified_class_inf.max(dim=-1)[0].squeeze(0).tolist())), get_out_list(out_inf[0], classified_class_inf[0], var_reg_inf[0] if var_reg_inf is not None else None, in_embs[0], in_tokens[0]), probs_inf.prod().item()])
                 p = probs_inf.prod().item()
             else:
                 p = -1
@@ -124,7 +130,7 @@ def model_inference(model, dataloader, max_len=200, last=False, beam_size=1):
                     total_prob = probs_inf[jkl].prod().item()
                     if total_prob > p:
                         p = total_prob
-                    outs.append([list(zip(classified_class_inf[jkl].tolist(), probs_inf[jkl].tolist())), get_out_list(out_inf[jkl], classified_class_inf[jkl], var_reg_inf[jkl], in_embs[0], in_tokens[0]), total_prob])
+                    outs.append([list(zip(classified_class_inf[jkl].tolist(), probs_inf[jkl].tolist())), get_out_list(out_inf[jkl], classified_class_inf[jkl], var_reg_inf[jkl] if var_reg_inf is not None else None, in_embs[0], in_tokens[0]), total_prob])
                 outs.append(["", "", ""]) # emmpty divider
 
             prs.append(pr)

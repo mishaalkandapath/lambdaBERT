@@ -1032,6 +1032,7 @@ if __name__ == "__main__":
     #choose 10 random indices from 0 to range(sentences)
     indices = random.sample(range(sentences), 10) #-- debugging
     terms =[]
+    var_counts = []
     for i in tqdm(range(sentences)):
     # for i in indices:
     #40000+2902+930+5
@@ -1064,6 +1065,7 @@ if __name__ == "__main__":
             target_emb_last[var_index_mask_no_temp != 0] = var_emb[non_zero_values]
 
         torch.save((sent_emb, sent_emb_last, target_emb, target_emb_last, target_tokens, var_mask, lambda_mask, app_mask), f"/w/150/lambda_squad/{df.iloc[i, 2][:-4]}.pt")
+
    
    
     # print((sentences))
