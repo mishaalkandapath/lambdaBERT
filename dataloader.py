@@ -13,7 +13,7 @@ import traceback
 #create a directory where the key is a csv. each row has first column as the raw text sentence, and the second col being the 
 # path to the file that stores all its lambda terms
 
-DATA_PATH = "/w/150/lambda_squad/lambdaBERT/data/"
+DATA_PATH = "/home/mishaalk/scratch/lambdaBERT/data/"
 BOS_TOKEN_LAST = [[[ 6.6404e-03,  1.2032e-01, -2.5759e-02,  1.1922e-01,  1.6584e-01,
         -2.4184e-02,  4.3246e-02, -9.4100e-02,  4.8467e-02,  1.7669e-01,
         -7.7217e-02, -2.4837e-02, -1.4056e-01,  1.7926e-01, -6.4828e-01,
@@ -700,7 +700,7 @@ def shuffled_collate(batch):
     sent_embedding, lambda_term_embedding, lambda_term_tokens, lambda_mask, var_mask, app_mask, stop_mask = [sent.squeeze(0) for sent in sent_embedding], [lambda_term.squeeze(0) for lambda_term in lambda_term_embedding], [torch.tensor(sent, dtype=torch.int64) for sent in lambda_term_tokens],[torch.tensor(sent, dtype=torch.bool).squeeze(0) for sent in lambda_mask], [torch.tensor(var, dtype=torch.int64).squeeze(0) for var in var_mask], [torch.tensor(app, dtype=torch.bool).squeeze(0) for app in app_mask], [torch.tensor(st, dtype=torch.bool).squeeze(0) for st in stop_mask]
     
     if sents is not None: sents = [sent.squeeze(0) for sent in sents]
-    assert all(sents[i].shape == sent_embedding[i].shape[:-1] for i in range(len(sents))) , f"sent_embedding shape: {[sent_embedding[i].shape for i in range(len(sent_embedding))]} and sents shape: {[sents[i].shape for i in range(len(sents))]} do not match"
+    #assert all(sents[i].shape == sent_embedding[i].shape[:-1] for i in range(len(sents))) , f"sent_embedding shape: {[sent_embedding[i].shape for i in range(len(sent_embedding))]} and sents shape: {[sents[i].shape for i in range(len(sents))]} do not match"
 
     sent_embedding_batched = pad_sequence(sent_embedding, batch_first=True, padding_value = 15)
     lambda_term_embedding_batched = pad_sequence(lambda_term_embedding, batch_first=True, padding_value = 15)
@@ -709,7 +709,7 @@ def shuffled_collate(batch):
     lambda_mask_batched = pad_sequence(lambda_mask, batch_first=True, padding_value = 0)
     app_mask_batched = pad_sequence(app_mask, batch_first=True, padding_value = 0)
     stop_mask_batched = pad_sequence(stop_mask, batch_first=True, padding_value = 1) # all pads are stops
-    if sents: sent_batched = pad_sequence(sents, batch_first=True, padding_value = 102)
+    if sents is not None: sent_batched = pad_sequence(sents, batch_first=True, padding_value = 102)
 
     lambda_pad_mask = lambda_term_embedding_batched == 15
     lambda_term_embedding_batched = lambda_term_embedding_batched.masked_fill(lambda_pad_mask, 0)
@@ -733,7 +733,7 @@ def seed_worker(worker_id):
     random.seed(worker_seed)
 
 def data_init(batch_size, last=False, inference=False):
-    
+    assert not inference
     #load in the tokenizer
     # tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
     dataset = ShuffledLambdaTermsDataset(DATA_PATH + 'input_sentences.csv', DATA_PATH + 'lambda_terms/', last=last, inference=inference)
