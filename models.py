@@ -11,6 +11,7 @@ import torch
 
 import lightning as L
 from lightning.pytorch.loggers import CSVLogger, WandbLogger
+from lightning.pytorch.profilers import AdvancedProfiler
 
 import torch.distributed as dist
 import torch.multiprocessing as mp
@@ -156,16 +157,14 @@ class ShuffledTransformerStack(L.LightningModule):
         
         if not self.custom: out, classified_class, var_reg = out
         else: out, classified_class = out
-
-        loss = criterion(out[~(var_index_mask_no.type(torch.bool) | pad_mask)],
-                        target[~(var_index_mask_no.type(torch.bool) | pad_mask)]) # use pads because pads are stops
-        
-        normed_vector = lambda x : x/torch.linalg.vector_norm(x, dim=-1, ord=2, keepdim=True)
-        normed_loss = criterion(normed_vector(out[~(var_index_mask_no.type(torch.bool) | pad_mask)]), 
-                                              normed_vector(target[~(var_index_mask_no.type(torch.bool) | pad_mask)]))
-
-        self.log(f"{split}_loss_tokens", loss, batch_size=out.size(0), sync_dist=True) 
-        self.log(f"{split}_loss_normed_tokens", normed_loss, batch_size=out.size(0), sync_dist=True)
+        filter_mask = ~(var_index_mask_no.type(torch.bool) | pad_mask)
+        token_loss = criterion(out[filter_mask],
+                        target[filter_mask]) # use pads because pads are stops
+        loss = token_loss
+        # normed_vector = lambda x : x/torch.linalg.vector_norm(x, dim=-1, ord=2, keepdim=True)
+        # normed_loss = criterion(normed_vector(out[filter_mask]), 
+        #                                       normed_vector(target[filter_mask]))
+        # self.log(f"{split}_loss_normed_tokens", normed_loss, batch_size=out.size(0), sync_dist=True)
         
         #mse on lambdas
         if out[lambda_index_mask].reshape(-1, out.size(-1)).shape[0] != 0:
@@ -174,13 +173,9 @@ class ShuffledTransformerStack(L.LightningModule):
             classifier_loss = class_criterion(classified_class.view(-1, 4), gt_cls_mask.view(-1))
             loss += classifier_loss
 
-            self.log(f"{split}_loss_classifier", classifier_loss, batch_size=out.size(0), sync_dist=True)
-
             if self.custom:
                 var_loss = criterion(out[(var_index_mask_no.type(torch.bool))],
                         target[(var_index_mask_no.type(torch.bool))]) # use pads because pads are stops
-                
-                self.log(f"{split}_loss_var_reg", var_loss.mean(), batch_size=out.size(0), sync_dist=True)
                 loss += var_loss
             else:
                 #loss on variables: compute the variance on the variables
@@ -228,26 +223,8 @@ class ShuffledTransformerStack(L.LightningModule):
 
                 self.log(f"{split}_var_norm", torch.mean((out_vars.pow(2).sum(dim=-1) + 1e-6).sqrt()), sync_dist=True)
 
-            if bos is not None:
-                # -- roll out classifier loss -- 
-                with torch.no_grad():
-                    out_start = bos
-                    seq_syntax = torch.cat([torch.zeros(out_start.size(0), 1).to(bos.device), var_index_mask_no[:, :-1].type(torch.bool) + 2*lambda_index_mask[:, :-1].type(torch.bool) + 3*app_index_mask[:, :-1].type(torch.bool)], dim=1)
-                    seq_syntax = seq_syntax.long()
-                    while out_start.size(1) < target.size(1):
-                        o, classified_class, _ = self.model(out_start, seq_syntax[:, :out_start.size(1)], in_embs, sent_pad_mask, self.device)
-                        out_start = torch.cat([out_start[:, :1], o], dim=1)
-                
-                o, classified_class, _ = self.model(out_start, seq_syntax, in_embs, sent_pad_mask, self.device)
-                # print("inference", F.softmax(classified_class, dim=-1)[0, :20])
-                time.sleep(60)
-                classifier_loss = class_criterion(classified_class.view(-1, 4), gt_cls_mask.view(-1))
-                loss += classifier_loss
-                self.log(f"{split}_loss_classifier_rollout", classifier_loss, batch_size=out.size(0), sync_dist=True)
-
-
-        self.log(f"{split}_loss", loss, batch_size=out.size(0), sync_dist=True, prog_bar=True) 
-
+        self.log_dict({f"{split}_loss_tokens": token_loss, f"{split}_loss_classifier": classifier_loss, f"{split}_loss_var_reg": var_loss.mean(), f"{split}_loss": loss}, batch_size=out.size(0), sync_dist=True, prog_bar=True)
+        # self.log(, prog_bar=True, batch_size=out.size(0), sync_dist=True)
         return loss   
 
     def training_step(self, batch, batch_idx):
@@ -300,7 +277,9 @@ def main(hparams=None, load_chckpnt=False, **kwargs):
         save_top_k=-1,
         every_n_epochs=4,
         save_on_train_epoch_end=True)
-    trainer = L.Trainer(max_epochs=200, callbacks=[checkpointing], log_every_n_steps=1, num_sanity_val_steps=0, logger=logger, default_root_dir=SAVE_DIR+"models/")
+    
+    # profiler = AdvancedProfiler(filename="out_log.txt")
+    trainer = L.Trainer(max_epochs=120, callbacks=[checkpointing], log_every_n_steps=1, num_sanity_val_steps=0, logger=logger, default_root_dir=SAVE_DIR+"models/")#, profiler=profiler)
     train_dataloader, val_dataloader, test_dataloader = dataloader.data_init(kwargs["batch_size"], last=kwargs["bert_is_last"])
     trainer.fit(model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
 
