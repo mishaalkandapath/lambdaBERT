@@ -30,7 +30,7 @@ def get_out_list(out, classified_class, var_reg, in_embs, in_tokens, dynamic_var
     for i in range(out.size(0)):
         leftover_words = torch.count_nonzero(classified_class[:i] == 0) == in_embs.size(0) - 2
         if classified_class[i] == 0:
-            token_idx = in_tokens[get_closest_idx(out[i:i+1, :], in_embs, in_tokens)]
+            token_idx = in_tokens[get_closest_idx(out[i, :], in_embs, in_tokens)]
             out_list.append(token_idx)
         else:
             out_list.append(101)
@@ -74,8 +74,6 @@ def teacher_forcing(model, batch):
     seq_syntax = var_index_mask_no.type(torch.bool) + 2*lambda_index_mask.type(torch.bool) + 3*app_index_mask.type(torch.bool) 
     
     target_tokens[target_tokens == -1] = 0
-    #decode
-    print(TOKENIZER.convert_ids_to_tokens(target_tokens[0].tolist()))
 
     outs = model(target_embs[:, :-1, :], seq_syntax[:, :-1], in_embs, sent_pad_mask) # get_discrete_output(in_embs, model, target_tokens.shape[1])
     if len(outs) == 3:
@@ -85,7 +83,6 @@ def teacher_forcing(model, batch):
         var_reg = None
     target = target_embs[:, 1:, :]
     lambda_index_mask, app_index_mask, var_index_mask_no, stop_mask, pad_mask = (lambda_index_mask[:, 1:], app_index_mask[:, 1:], var_index_mask_no[:, 1:], stop_mask[:, 1:], pad_mask[:, 1:])
-    print(var_index_mask_no)
     #classiifer truth
     gt_cls_mask = var_index_mask_no.type(torch.bool) + 2*lambda_index_mask.type(torch.bool) + 3*app_index_mask.type(torch.bool) #+ 4*stop_mask.type(torch.bool) #because lambda's class is 2
     loss = nn.functional.cross_entropy(classified_class.view(-1, 4), gt_cls_mask.view(-1), reduction="none")

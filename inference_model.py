@@ -24,30 +24,32 @@ import time
 
 ALL_VAR_EMBS = make_var_emb(25)
 
-def get_closest_idx(out_vector, in_vectors, in_tokens, sep_allowed=True, prejudice_tokens=None):
+def get_closest_idx(out_vector, in_vectors, in_tokens=None, sep_allowed=True, prejudice_tokens=None):
     #closest euclidean distance:
+    if len(out_vector.shape) != 1: out_vector = out_vector.unsqueeze(1)
     vecs = (in_vectors - out_vector)**2
     vecs = vecs.sum(dim=-1)
     best_v_indices = vecs.argsort(dim=-1)
-    # print(best_v_indices, in_tokens.shape)
-    cur = in_tokens[best_v_indices[0]]
-    checker = [SEP_ID]
-    while (cur.item() in checker and not sep_allowed) or cur == BOS_ID:
-        best_v_indices = best_v_indices[1:]
-        cur = in_tokens[best_v_indices[0]]
-        if prejudice_tokens: checker = prejudice_tokens
 
-    best_v_index = best_v_indices[0]
+    if in_tokens is not None:
+        cur = in_tokens[best_v_indices[0]]
+        checker = [SEP_ID]
+        while (cur.item() in checker and not sep_allowed) or cur == BOS_ID:
+            best_v_indices = best_v_indices[1:]
+            cur = in_tokens[best_v_indices[0]]
+            if prejudice_tokens: checker = prejudice_tokens
+    best_v_index = best_v_indices[0] if len(out_vector.shape) == 1 else best_v_indices[:, 0]
     best_vector = in_vectors[list(range(in_vectors.size(0))), best_v_index]
     return best_v_index
 
 def get_closest_var_idx(out_vector, var_count=0, printing=False):
     #get the closes euclidean distance vector from all vars
     global ALL_VAR_EMBS
+    if len(out_vector.shape) != 1: out_vector = out_vector.unsqueeze(1)
     distances = ALL_VAR_EMBS - out_vector.to(ALL_VAR_EMBS.device)
     distances = (distances ** 2).sum(-1)
-    if printing: print(distances, distances.argmin(), var_count)
-    return distances.argmin()
+    if printing: print(distances, distances.argmin(-1), var_count)
+    return distances.argmin(-1)
 
 class InferenceModel(nn.Module):
     def __init__(self, model):
@@ -57,7 +59,7 @@ class InferenceModel(nn.Module):
     @dispatch(torch.Tensor, torch.Tensor)
     def forward(self, in_embs, in_tokens, max_len=20, beam_size=0, last=False, bos=None, reference_target=None):
         if beam_size > 1: 
-            return self.beam_search_inference(in_embs, max_len=max_len, beam_size=beam_size)
+            return self.beam_search_inference(in_embs, in_tokens, max_len=max_len, beam_size=beam_size, last=last, bos=bos)
         prs = []
         x = torch.tensor(BOS_TOKEN if not last else BOS_TOKEN_LAST).to(in_embs.device) if bos is None else bos
         out_stacked, classified_class_stacked, classified_class_stacked_unfiltered, var_reg_stacked = x, torch.tensor([[0]]).long().to(in_embs.device), None, None
@@ -103,13 +105,12 @@ class InferenceModel(nn.Module):
         return out_stacked[:, 1:], classified_class_stacked_unfiltered, var_reg_stacked, torch.tensor(prs)
     
     
-    def get_words(self, out, cl): #given an output for a sequence, produce the discrete tokenized sequence
+    def get_words(self, out, cl, in_embs, in_tokens): #given an output for a sequence, produce the discrete tokenized sequence
         list_out = []
         for i in range(out.shape[0]):
             if cl[i] == 0:
-                sorted_stiff, newest_out = self.linear(out[i, :]).sort(-1)
-                newest_out = newest_out[-1].item()
-                list_out.append(newest_out)
+                newest_out = get_closest_idx(out[-1], in_embs, in_tokens, sep_allowed = torch.count_nonzero(cl == 0) == len(in_embs))
+                list_out.append(in_tokens[newest_out])
             else:
                 list_out.append(101)
 
@@ -149,9 +150,9 @@ class InferenceModel(nn.Module):
         x = out_stacked
         return out_stacked[:, 1:], classified_class_stacked_unfiltered, var_reg_stacked, torch.tensor(probs_list)
 
-    def beam_search_inference(self, in_embs, max_len=20, classify=True, beam_size=1, reference=None): # TODO: make beam start from 5 -- number of classes
+    def beam_search_inference(self, in_embs, in_tokens, max_len=20, classify=True, beam_size=1, last=True, bos=None, reference=None): # TODO: make beam start from 5 -- number of classes
         self.model.eval()
-        x = BOS_TOKEN_LAST#torch.tensor(BOS_TOKEN_LAST).to(in_embs.device)
+        x = x = torch.tensor(BOS_TOKEN if not last else BOS_TOKEN_LAST).to(in_embs.device) if bos is None else bos#torch.tensor(BOS_TOKEN_LAST).to(in_embs.device)
         out_stacked, classified_class_stacked, var_reg_stacked, newest_out = x, torch.tensor([[0]]).long().to(x.device) if classify else None, None, None
         list_out = []
         cls_out = []
@@ -167,9 +168,10 @@ class InferenceModel(nn.Module):
             else:
                 out, classified_class = outs
                 var_reg = None
-            print(nn.functional.softmax(classified_class, dim=-1))
-            if out_stacked.size(1) > 11:
-                raise Exception
+            print(out_stacked)
+            # print(nn.functional.softmax(classified_class, dim=-1))
+            # if out_stacked.size(1) > 11:
+            #     raise Exception
             if classify: 
                 # did we have a lambda last time?
                 # lmda_mask = torch.where(classified_class_stacked[:, -1] == 2)
@@ -217,26 +219,30 @@ class InferenceModel(nn.Module):
                     # print(prob_list, cls_probs)
             
             in_embs = torch.repeat_interleave(in_embs[0:1], len(b_indices), dim=0).to(x.device)
-            notword_indices = torch.where(classified_class[:, -1] != 0) # classified_class is batch x length, giving not_word indices size of batch
+            app_indices, var_indices, lambda_indices = torch.where(classified_class[:, -1]== 3)[0], torch.where(classified_class[:, -1] == 2)[0], torch.where(classified_class[:, -1] == 1)[0]
             out = out[b_indices]
-            word_replaced = find_best_out(out[:, -1], in_embs)
-            word_replaced[notword_indices] = out[notword_indices[0], -1]
+
+            word_replaced = in_embs[0, get_closest_idx(out[:, -1], in_embs)]
+            if lambda_indices.tolist() != []: word_replaced[lambda_indices] = torch.tensor(LAMBDA_LAST if last else LAMBDA).unsqueeze(0).to(x.device)
+            if app_indices.tolist() != []:  
+                word_replaced[app_indices] = torch.tensor(OPEN_RRB_LAST if last else OPEN_RRB).unsqueeze(0).to(x.device)
+            if var_indices.tolist() != []:  word_replaced[var_indices] = ALL_VAR_EMBS[get_closest_var_idx(out[:, -1])].to(x.device)
             
             if out_stacked.size(1) > 2:
-                print(reference[0, out_stacked.size(1)-1])
-                print(((reference[0, out_stacked.size(1)-1] - out[0, -1])**2).sum(dim=-1))
-                print(word_replaced, notword_indices)
+            # #     print(reference[0, out_stacked.size(1)-1])
+            # #     print(((reference[0, out_stacked.size(1)-1] - out[0, -1])**2).sum(dim=-1))
+            # #     print(word_replaced, notword_indices)
                 time.sleep(60)
-            if var_reg_stacked is None:
+            if out_stacked.size(1) == 1:
                 var_reg_stacked = var_reg
                 out_stacked = torch.cat([out_stacked[b_indices], word_replaced.unsqueeze(1)], dim=1) 
-                var_reg_stacked = var_reg_stacked.squeeze(0).repeat(min(beam_size, 4), 1, 1)
+                if var_reg is not None: var_reg_stacked = var_reg_stacked.squeeze(0).repeat(min(beam_size, 4), 1, 1)
                 classified_class_stacked = classified_class_stacked.squeeze(0).repeat(min(beam_size, 4), 1)
                 classified_class_stacked = torch.cat([classified_class_stacked, classified_class[:, -1].unsqueeze(1)], dim=1)
                 
             else:
                 out_stacked = torch.cat([out_stacked[b_indices], word_replaced.unsqueeze(1)], dim=1) # get the outputs of these batches only
-                var_reg_stacked = torch.cat([var_reg_stacked[b_indices], var_reg[b_indices, -1].unsqueeze(1)], dim=1)
+                if var_reg is not None: var_reg_stacked = torch.cat([var_reg_stacked[b_indices], var_reg[b_indices, -1].unsqueeze(1)], dim=1)
                 classified_class_stacked = torch.cat([classified_class_stacked[b_indices], classified_class[:, -1].unsqueeze(1)], dim=1)           
 
             if not classify: cls_probs = nn.functional.softmax(classified_class[-1, -1], dim=-1)
@@ -246,16 +252,17 @@ class InferenceModel(nn.Module):
             not_rem = []
             for i in range(classified_class_stacked.size(0)):
                 if (classified_class_stacked[i, -1] == 0): # if we have a word
-                    sorted_stiff, newest_out = self.linear(out_stacked[i, -1, :]).sort(-1)
-                    newest_out = newest_out[-1].item()
+                    # sorted_stiff, newest_out = self.linear(out_stacked[i, -1, :]).sort(-1)
+                    # newest_out = newest_out[-1].item()
+                    newest_out = get_closest_idx(out_stacked[i, -1], in_embs[0], in_tokens[0], sep_allowed = torch.count_nonzero(classified_class_stacked[i] == 0) == len(in_embs[0]))
                 else: newest_out = None
                 if newest_out == 102 or (out_stacked.size(1) == max_len and len(list_out) != beam_size): 
                     # print(TOKENIZER.convert_ids_to_tokens([newest_out]))
                     if len(list_out) < beam_size or prob_list[i] > list_out[0][0]:
                         if len(list_out) == beam_size: list_out = list_out[1:]
-                        list_out.append((prob_list[i], random.random(), probs_list[i].detach().cpu(), self.get_words(out_stacked[i], classified_class_stacked[i]), 
+                        list_out.append((prob_list[i], random.random(), probs_list[i].detach().cpu(), out_stacked[i, 1:], 
                                                                     classified_class_stacked[i, 1:],
-                                                                    var_reg_stacked[i])) # save the sequence
+                                                                    var_reg_stacked[i] if var_reg_stacked is not None else None)) # save the sequence
                         list_out.sort() # maintain ordering
                         rem_list.append(i)
                         continue
@@ -267,7 +274,7 @@ class InferenceModel(nn.Module):
                 probs_list[i] = probs_list[not_rem[0]]
                 prob_list[i] = prob_list[not_rem[0]]
                 out_stacked[i] = out_stacked[not_rem[0]]
-                var_reg_stacked[i] = var_reg[not_rem[0]]
+                if var_reg_stacked is not None: var_reg_stacked[i] = var_reg[not_rem[0]]
                 classified_class_stacked[i] = classified_class_stacked[not_rem[0]]
 
             x = out_stacked
@@ -277,7 +284,7 @@ class InferenceModel(nn.Module):
         list_out.sort(key=lambda x: x[0], reverse=True)
         ps, _, pss, list_out, cls_out, var_out = (zip(*list_out))   
         # print(pss)
-        return list_out, cls_out, var_out, ps, pss
+        return list_out, cls_out, var_out, pss
 
     @dispatch(torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor)   
     def forward(self, seq, seq_syntax, in_embs, mb_pad):
