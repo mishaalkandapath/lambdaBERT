@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 from models import *
 import dataloader
 import tqdm, csv, random, pandas as pd
-from tokenization import get_bert_emb, TOKENIZER, LAMBDA, OPEN_RRB, BERT_MODEL
+from tokenization import get_bert_emb, TOKENIZER, LAMBDA, OPEN_RRB, BERT_MODEL, preprocess_sent
 from dataloader import SEP_TOKEN, BOS_TOKEN, BOS_TOKEN_LAST
 from inference import teacher_forcing
 
@@ -21,8 +21,10 @@ import random
 
 SEP_ID=102
 BOS_ID=101
+
 import time
 from utils import ThreadLockDict
+from copy import deepcopy
 
 #global variables
 thread_locked_dict = ThreadLockDict()
@@ -349,22 +351,24 @@ def levenstein_lambda_term(str1, str2):
                     4. 1 + min(lev(tail(a), b), lev(a, tail(b)), lev(tail(a), tail(b))) if type(a) != var and type(b) != var and not car(a) == car(b)
     - changing variable declaration spots with each other does not lead to a penalty. Changes in variable usages do - coz a change in variale declaration naming should be reflected in all usages because pointers
     """
-    num_vars_a = sum([1 for t in str1 if re.match(r"(S|NP|N|PP)_\d+", t)])
-    num_vars_b = sum([1 for t in str2 if re.match(r"(S|NP|N|PP)_\d+", t)])
-    rename = lambda x, t: x[:re.findall(r"(S|NP|N|PP)_\d+", x)[0].find("_")+1]+ (int(x[re.findall(r"(S|NP|N|PP)_\d+", x)[0].find("_")+1:]) + t)
-    new_str2 = [t if not re.match(r"(S|NP|N|PP)_\d+", t) else rename(t, num_vars_a) for t in str2] # offset so that no two variables are shared acorss str1 and str2
+    num_vars_a = sum([1 for t in str1 if re.match(r"x\d+", t)])
+    num_vars_b = sum([1 for t in str2 if re.match(r"x\d+", t)])
+    rename = lambda x, t: x[:1]+ str(int(x[1:]) + t)
+    new_str2 = [t if not re.match(r"x\d+", t) else rename(t, num_vars_a) for t in str2] # offset so that no two variables are shared acorss str1 and str2
 
     var_name_counter = num_vars_a + num_vars_b
 
     str2_var_pointers = {}
     new_new_str2 = []
     for i, t in enumerate(new_str2):
-        if re.match(r"(S|NP|N|PP)_\d+", t):
+        if re.match(r"x\d+", t):
             if t in str2_var_pointers: 
                 new_new_str2.append(str2_var_pointers[t])
             else:
                 str2_var_pointers[t] = [t]
                 new_new_str2.append(str2_var_pointers[t])
+        else:
+            new_new_str2.append(t)
     new_str2 = tuple(new_new_str2)
 
     #initialize dp 
@@ -388,25 +392,44 @@ def levenstein_lambda_term(str1, str2):
                 distances[t1][t2] = distances[t1 - 1][t2 - 1]
             elif t1 >= 2  and t2 >= 2 \
                 and str1[t1-2] == "λ" and access_b(t2-2) == "λ" \
-                and (re.match(r"(S|NP|N|PP)_\d+", str1[t1-1]) and re.match(r"(S|NP|N|PP)_\d+", access_b(t2-1))):
-                c = distances[t1 - 1][t2 - 1] # no need to change anything here
+                and (re.match(r"x\d+", str1[t1-1]) and re.match(r"x\d+", access_b(t2-1))):
+                c = distances[t1 - 1][t2 - 1] # no need to change anything here -- simple variable renaming
                 #switch pointers around in b 
                 #make new var name
-                new_var_name = f"NP_{var_name_counter}"
+                new_var_name = f"x{var_name_counter}"
                 var_name_counter += 1
-                str2_var_pointers[access_b(t2-1)][0] = var_name_counter
-                str2_var_pointers[new_var_name] = str2_var_pointers[access_b(t2-1)]
-                str1.replace(str1[t1-1], new_var_name)
 
-                a = distances[t1][t2 - 1]
-                b = distances[t1 - 1][t2]
+                str2_var_pointers_copy = deepcopy(str2_var_pointers)
+                str1_copy = deepcopy(str1)
+                new_new_str2_copy = deepcopy(new_new_str2)
+
+                old_access = access_b(t2-1)
+                # print(str2_var_pointers, new_var_name)
+                str2_var_pointers[old_access][0] = new_var_name
+                str2_var_pointers[new_var_name] = str2_var_pointers[old_access]
+
+                s1 = " ".join(str1)
+                s1 = s1.replace(str1[t1-1], new_var_name)
+                str1 = s1.split()
+                
+                a = distances[t1][t2 - 1] + 1
+                b = distances[t1 - 1][t2] + 1
 
                 if (a <= b and a <= c):
-                    distances[t1][t2] = a + 1
+                    distances[t1][t2] = a
+                    #reset renaming
+                    str2_var_pointers = str2_var_pointers_copy
+                    str1 = str1_copy
+                    new_new_str2 = new_new_str2_copy
+                    var_name_counter -= 1
                 elif (b <= a and b <= c):
-                    distances[t1][t2] = b + 1
+                    str2_var_pointers = str2_var_pointers_copy
+                    str1 = str1_copy
+                    new_new_str2 = new_new_str2_copy
+                    var_name_counter -= 1
+                    distances[t1][t2] = b
                 else:
-                    distances[t1][t2] = c + 1
+                    distances[t1][t2] = c
             else:
                 a = distances[t1][t2 - 1]
                 b = distances[t1 - 1][t2]
@@ -443,40 +466,144 @@ def compute_confusion_matrix(model, dataloader, last=False):
                 confusion_matrix[i, j] += ((classified_class == j) & (gt_cls_mask == i)).sum().detach().cpu()
     return confusion_matrix
 
+def find_arity(lambda_term):
+    # Regular expression to match function applications
+    pattern = re.compile(r'\(([a-zA-Z_]+[0-9]*)\s([^()]+)\)')
+    
+    # Dictionary to store function arities
+    arities = {}
+    
+    # Find all matches in the lambda term
+    matches = pattern.findall(lambda_term)
+    
+    for match in matches:
+        function_name = match[0]
+        arguments = match[1].strip().split()
+        
+        # Count the number of arguments
+        arity = len(arguments)
+        
+        # Update the arity in the dictionary
+        if function_name in arities:
+            if arity > arities[function_name]:
+                arities[function_name] = arity
+        else:
+            arities[function_name] = arity
+    return list(arities.values())
+
+def align_lambda_terms(lambda_str, true_str):
+    pass
+
+def eval_parses(gold_parse, parse):
+    pass
+
 if __name__ == "__main__":
     import os
+    import Levenshtein
     #arguments
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model_path", type=str, required=True)
-    parser.add_argument("--last", action="store_true")
-    parser.add_argument("--custom", action="store_true")
+    l1_parser = argparse.ArgumentParser()
+    l1_parser.add_argument("--confusion_matrix", action="store_true")
+    l1_parser.add_argument("--levenshtein", action="store_true")
+    l1_parser.add_argument("--csv", type=str, default="all_lev.csv")
+    l1_parser.add_argument("--split", type=str, default="train")
+    l1_parser.add_argument("--arity", action="store_true")
 
-    args = parser.parse_args()
+    args = l1_parser.parse_args()
 
-    os.environ["CUDA_VISIBLE_DEVICES"] = "1"
-    os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+    if args.confusion_matrix:
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--model_path", type=str, required=True)
+        parser.add_argument("--last", action="store_true")
+        parser.add_argument("--custom", action="store_true")
 
-    #load model
-    model = TransformerDecoderStack(4, 384, 8, 3072, custom=args.custom)
-    checkpoint = torch.load(args.model_path)
-    model_weights = {k.replace("model.", ""): v for k, v in checkpoint["state_dict"].items() if k.startswith("model.")}
-    model_weights.update({k: torch.zeros_like(v) for k, v in model.state_dict().items() if k not in model_weights})
-    model.load_state_dict(model_weights)
+        args = parser.parse_args()
 
-    # model = ShuffledTransformerStack.load_from_checkpoint(args.model_path, model).model
-    DEVICE = torch.device("cpu") if args.cpu else torch.device("cuda")
-    model = model.to(DEVICE)
+        os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+        os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
-    # --LOAD DATA
-    dataloader, valid_dataloader, test_dataloader = dataloader.data_init(1, last=args.last)
+        #load model
+        model = TransformerDecoderStack(4, 384, 8, 3072, custom=args.custom)
+        checkpoint = torch.load(args.model_path)
+        model_weights = {k.replace("model.", ""): v for k, v in checkpoint["state_dict"].items() if k.startswith("model.")}
+        model_weights.update({k: torch.zeros_like(v) for k, v in model.state_dict().items() if k not in model_weights})
+        model.load_state_dict(model_weights)
+
+        # model = ShuffledTransformerStack.load_from_checkpoint(args.model_path, model).model
+        DEVICE = torch.device("cpu") if args.cpu else torch.device("cuda")
+        model = model.to(DEVICE)
+
+        # --LOAD DATA
+        dataloader, valid_dataloader, test_dataloader = dataloader.data_init(1, last=args.last)
 
 
-    #-- CONFUSION MATRIX --
-    confusion_matrix = compute_confusion_matrix(model, dataloader)
-    plot_confusion_matrix(confusion_matrix, "test")
+        #-- CONFUSION MATRIX --
+        confusion_matrix = compute_confusion_matrix(model, dataloader)
+        plot_confusion_matrix(confusion_matrix, "test")
 
-    confusion_matrix = compute_confusion_matrix(model, valid_dataloader)
-    plot_confusion_matrix(confusion_matrix, "valid")
+        confusion_matrix = compute_confusion_matrix(model, valid_dataloader)
+        plot_confusion_matrix(confusion_matrix, "valid")
 
-    confusion_matrix = compute_confusion_matrix(model, test_dataloader)
-    plot_confusion_matrix(confusion_matrix)
+        confusion_matrix = compute_confusion_matrix(model, test_dataloader)
+        plot_confusion_matrix(confusion_matrix)
+    elif args.levenshtein:
+    
+        #open csv file
+        with open(args.csv, "r") as f:
+            reader = csv.reader(f)
+            lev_scores = []
+            lev_scores_normed = []
+            lev_scores_modified = []
+            lev_scores_modified_normed = []
+            for row in tqdm.tqdm(reader, total=12006):
+                lev_score = levenstein_lambda_term(row[0].split(), row[1].split())
+                # print("True levenshtein distance: ", "Normalized true lev dist: ", )
+                # print("Modified levenhtein distance: ", "Normalized modified lev dist: ", )
+                lev_scores_modified.append(lev_score)
+                lev_scores_modified_normed.append(lev_score/len(row[0].split()))
+                t_lev_scores = Levenshtein.distance(row[0], row[1])
+                lev_scores.append(t_lev_scores)
+                lev_scores_normed.append(t_lev_scores/len(row[0]))
+        #plot histograms on separate plots
+        # create plot with subplots
+        # print(len(lev_scores), len(lev_scores_normed))
+        fig, axes = plt.subplots(2, 2, figsize=(10, 10))
+        axes = axes.flatten()
+        axes[0].hist(lev_scores, bins=30, alpha=0.5, label="True Levenshtein Distance")
+        axes[1].hist(lev_scores_normed, bins=30, alpha=0.5, label="Normalized True Levenshtein Distance")
+        axes[2].hist(lev_scores_modified, bins=30, alpha=0.5, label="Modified Levenshtein Distance")
+        axes[3].hist(lev_scores_modified_normed, bins=30, alpha=0.5, label="Normalized Modified Levenshtein Distance")
+        for i, ax in enumerate(axes):
+            ax.legend()
+            #step the x axis by 0.5 
+            if i == 3: ax.set_xticks(np.arange(0, 5, 0.5))
+            ax.grid(True, alpha=0.3)
+        #main title
+        fig.suptitle(f"{args.split} set Levenshtein Distances")
+        plt.savefig(f"{args.split}_lev.png")
+    elif args.arity:
+        #load all the data:
+        DATA_PATH = "/w/150/lambda_squad/lambdaBERT/data/"
+        in_file, lambda_terms = DATA_PATH + 'input_sentences.csv', DATA_PATH + 'lambda_terms/'
+        in_sentences = pd.read_csv(in_file)
+
+        #for each line in file:
+        ars = []
+        for i, row in tqdm.tqdm(in_sentences.iterrows(), total=in_sentences.shape[0]):
+            path = in_sentences.iloc[i, 2]
+            #get the lambda term
+            path = DATA_PATH + path[len("lambdaBERT/data/"):]
+            with open(path, 'r') as f:
+                lambda_terms = f.readlines()
+            #get the arities
+            for i, lambda_term in enumerate(lambda_terms):
+                arities = find_arity(lambda_term.strip())
+                ars.extend(arities)
+
+        #plot histogram of arities;
+        plt.hist(ars, bins=30)
+        plt.xlabel("Arity")
+        plt.ylabel("Count")
+        plt.title("Distribution of Function Arity in Lambda Terms")
+        plt.grid(True, alpha=0.3)
+        plt.savefig("arity_dist.png")
+
