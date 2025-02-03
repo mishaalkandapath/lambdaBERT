@@ -1,6 +1,6 @@
 import torch
 import torch.nn
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, Subset
 
 import random
 import pandas as pd
@@ -8,7 +8,7 @@ import pandas as pd
 from tokenization import TOKENIZER, BERT_MODEL, create_out_tensor, preprocess_sent
 from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence
 
-import traceback
+import traceback, pickle
 
 #create a directory where the key is a csv. each row has first column as the raw text sentence, and the second col being the 
 # path to the file that stores all its lambda terms
@@ -737,15 +737,15 @@ def data_init(batch_size, last=False, inference=False):
     # tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
     dataset = ShuffledLambdaTermsDataset(DATA_PATH + 'input_sentences.csv', DATA_PATH + 'lambda_terms/', last=last, inference=inference)
     #split the datset 70 20 10 split
-    train_size = int(0.7 * len(dataset))
-    val_size = int(0.2 * len(dataset))
-    test_size = len(dataset) - train_size - val_size
+
+    f = open(DATA_PATH+"dataset_splits.pkl", "rb")
+    train_indices, val_indices, test_indices = pickle.load(f)
 
     gen = torch.Generator()
     gen.manual_seed(0)
     
-    train_dataset, val_dataset, test_dataset = torch.utils.data.random_split(dataset, [train_size, val_size, test_size], generator=gen)
-    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=12, collate_fn=shuffled_collate, worker_init_fn=seed_worker, generator=gen)
-    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=12, collate_fn=shuffled_collate, worker_init_fn=seed_worker, generator=gen)
-    test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=True, num_workers=12, collate_fn=shuffled_collate, worker_init_fn=seed_worker, generator=gen)
+    train_dataset, val_dataset, test_dataset = Subset(dataset, train_indices), Subset(dataset, val_indices), Subset(dataset, test_indices)
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=12, collate_fn=shuffled_collate)
+    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=12, collate_fn=shuffled_collate)
+    test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=12, collate_fn=shuffled_collate)
     return train_dataloader, val_dataloader, test_dataloader

@@ -40,11 +40,18 @@ def obtain_target_lambda_sequence(in_tokens, var_indices_no, lambda_indices, app
     in_tokens[lambda_indices] = 475
     in_tokens[app_indices] = 113
     in_tokens[in_tokens == -1] = 0
-    word_list = TOKENIZER.convert_ids_to_tokens(in_tokens)
+
     #mark the var_indices
     var_indices = torch.where(var_indices_no != 0)[0]
+    in_tokens = in_tokens.tolist()
+    offset = 0
     for i in var_indices.tolist():
-        word_list[i] = f"x{var_indices_no[i]}"
+        t = TOKENIZER.encode(f"x{var_indices_no[i]}", add_special_tokens=False)
+        in_tokens = in_tokens[:i+offset] + t + in_tokens[i+1+offset:]
+        offset += len(t) - 1
+    in_tokens = torch.tensor(in_tokens)
+
+    word_list = TOKENIZER.decode(in_tokens).split()
     return word_list[1:-1]
 
 def get_out_list(out, classified_class, var_reg, in_embs, in_tokens, dynamic_vars=False, get_indices=False):
@@ -59,18 +66,17 @@ def get_out_list(out, classified_class, var_reg, in_embs, in_tokens, dynamic_var
             out_list.append(101)
 
     if dynamic_vars: var_reg = var_reg.squeeze(0)
-    out_index_list = out_list.copy()
-    out_list = TOKENIZER.convert_ids_to_tokens(out_list) 
     
     lambda_indices, app_indices, var_indices = torch.where(classified_class == 2)[0].tolist(), torch.where(classified_class == 3)[0].tolist(), torch.where(classified_class == 1)[0].tolist()
 
     for i in lambda_indices:
-        out_list[i] = "λ"
+        out_list[i] = 475#"λ"
 
     for i in app_indices:
-        out_list[i] = "("
+        out_list[i] = 113#"("
     
     # time for variables
+    offset = 0
     if dynamic_vars:
         var_dict = {}
         for i in var_indices:
@@ -87,7 +93,12 @@ def get_out_list(out, classified_class, var_reg, in_embs, in_tokens, dynamic_var
         for i in var_indices:
             out_emb = out[i]
             var_idx = get_closest_var_idx(out_emb, var_count=i)
-            out_list[i] = f"x{var_idx}"
+            t = TOKENIZER.encode(f"x{var_idx}", add_special_tokens=False)
+            out_list = out_list[:i+offset] + t + out_list[i+1+offset:]
+            offset += len(t) - 1
+            # out_list[i] = f"x{var_idx}"
+    out_list = TOKENIZER.decode(out_list) 
+    out_list = out_list.split()
     if get_indices:
         return " ".join(out_list), out_list
     return " ".join(out_list)
@@ -135,7 +146,6 @@ def model_inference(model, dataloader, max_len=200, last=False, beam_size=1, spl
         pbar = tqdm.tqdm(total=min(100000, len(dataloader)))
         for k, batch in enumerate(dataloader):
             bos, loss, out, classified_class, var_reg, gt_cls_mask, in_embs, in_tokens, true_tokens = teacher_forcing(model, batch)
-
             average_loss += loss.item()
             count += 1
             pbar.set_description(f"Loss: {loss.item()/count}")
@@ -167,6 +177,7 @@ def model_inference(model, dataloader, max_len=200, last=False, beam_size=1, spl
             prs.append(pr)
             ps.append(p)
             if k>100000: break
+
     # #write
     loss = average_loss / count
     print("Average Loss: ", loss)
@@ -271,3 +282,5 @@ if __name__ == "__main__":
     #         out_file.flush()
     #         os.fsync(out_file)
     #         write_lines = []    
+
+#command:  python inference.py --model_path models/train_r3_varrg.ckpt --last --custom
