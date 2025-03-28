@@ -272,18 +272,46 @@ def mean_probability_measures(true_probs, inference_probs, title="Evolution of V
 
 # plot confusion matrix
 def plot_confusion_matrix(confusion_matrix, split="train"):
-    #indx to label map:
-    #normalize confusion matrix
-    confusion_matrix = confusion_matrix / confusion_matrix.sum(dim=1, keepdim=True)
-    #make a color bar
-    label_map = {0: "Word", 1: "Variable", 2: "Lambda", 3: "Application"}#, 4: "Stop"}
-    plt.imshow(confusion_matrix, cmap="viridis", )
-    plt.xticks(list(label_map.keys()), list(label_map.values()))
-    plt.yticks(list(label_map.keys()), list(label_map.values()))
-    plt.xlabel("Predicted")
-    plt.ylabel("True")
-    plt.colorbar()
-    plt.savefig(f"confusion_matrix_{split}.png")
+    # Label mapping
+    label_map = {
+        0: "Word",
+        1: "Variable",
+        2: "Lambda",
+        3: "Application"
+    }
+    
+    # Normalize confusion matrix
+    normalized_matrix = confusion_matrix / confusion_matrix.sum(dim=1, keepdim=True)
+    
+    # Create figure with a larger size
+    plt.figure(figsize=(10, 8))
+    
+    # Create heatmap using seaborn
+    sns.heatmap(
+        normalized_matrix,
+        annot=True,  # Show numbers in cells
+        fmt='.2%',   # Format as percentage with 2 decimal places
+        cmap='YlGnBu',  # Different colormap that's easier to read
+        xticklabels=list(label_map.values()),
+        yticklabels=list(label_map.values()),
+        square=True,  # Make cells square
+        cbar_kws={'label': 'Proportion'}
+    )
+    
+    # Customize the plot
+    plt.title(f'Confusion Matrix ({split.capitalize()})', pad=20)
+    plt.xlabel('Predicted Label', labelpad=10)
+    plt.ylabel('True Label', labelpad=10)
+    
+    # Rotate x-axis labels for better readability
+    plt.xticks(rotation=45, ha='right')
+    plt.yticks(rotation=0)
+    
+    # Adjust layout to prevent label cutoff
+    plt.tight_layout()
+    
+    # Save and clear
+    plt.savefig(f"confusion_matrix_{split}.png", dpi=300, bbox_inches='tight')
     plt.clf()
 
 def easy_free_variable_counts(input_sents, model):
@@ -352,16 +380,16 @@ def levenstein_lambda_term(str1, str2):
     - changing variable declaration spots with each other does not lead to a penalty. Changes in variable usages do - coz a change in variale declaration naming should be reflected in all usages because pointers
     """
     num_vars_a = sum([1 for t in str1 if re.match(r"x\d+", t)])
-    num_vars_b = sum([1 for t in str2 if re.match(r"x\d+", t)])
-    rename = lambda x, t: x[:1]+ str(int(x[1:]) + t)
-    new_str2 = [t if not re.match(r"x\d+", t) else rename(t, num_vars_a) for t in str2] # offset so that no two variables are shared acorss str1 and str2
+    num_vars_b = sum([1 for t in str2 if re.match(r"specvar\d+", t)])
+    rename = lambda x, t: "specvar"+ str(int(x[1:]) + t)
+    new_str2 = [t if not re.match(r"x\d+", t) else rename(t, num_vars_b) for t in str1] # offset so that no two variables are shared acorss str1 and str2
 
     var_name_counter = num_vars_a + num_vars_b
 
     str2_var_pointers = {}
     new_new_str2 = []
     for i, t in enumerate(new_str2):
-        if re.match(r"x\d+", t):
+        if re.match(r"specvar\d+", t):
             if t in str2_var_pointers: 
                 new_new_str2.append(str2_var_pointers[t])
             else:
@@ -392,7 +420,7 @@ def levenstein_lambda_term(str1, str2):
                 distances[t1][t2] = distances[t1 - 1][t2 - 1]
             elif t1 >= 2  and t2 >= 2 \
                 and str1[t1-2] == "λ" and access_b(t2-2) == "λ" \
-                and (re.match(r"x\d+", str1[t1-1]) and re.match(r"x\d+", access_b(t2-1))):
+                and (re.match(r"specvar\d+", str1[t1-1]) and re.match(r"specvar\d+", access_b(t2-1))):
                 c = distances[t1 - 1][t2 - 1] # no need to change anything here -- simple variable renaming
                 #switch pointers around in b 
                 #make new var name
@@ -444,26 +472,201 @@ def levenstein_lambda_term(str1, str2):
 
     return distances[len(str1)][len(new_new_str2)]
 
+def levenshtein_distance_for_lists(list2, list1):
+    """
+    Calculate the Levenshtein distance between two lists of strings.
+    The distance is the minimum number of single-element edits (insertions, 
+    deletions, or substitutions) required to change one list into the other.
+    
+    Args:
+        list1: The first list of strings
+        list2: The second list of strings
+        
+    Returns:
+        The Levenshtein distance between the two lists
+    """
+    #initial renaming:
+    rename = lambda x: "specvar"+ str(int(x[1:]) - 1)
+    
+    def split_string(text, pattern=r"(x\d+)(.*)"):
+        match = re.match(pattern, text)
+        if match:
+            return match.groups()
+        else:
+            return None
+    
+    new_list1 = []
+    for t in list1:
+        if re.match(r"x\d+", t):
+            renaming = split_string(t)
+            if len(renaming[-1]) == 0: renaming = renaming[:-1]
+            new_list1.extend(renaming)
+        else:
+            new_list1.append(t)
+    list1 = new_list1
+
+    #similarly for list2
+    new_list2 = []
+    for t in list2:
+        if re.match(r"specvar\d+", t):
+            renaming = split_string(t, pattern=r"(specvar\d+)(.*)")
+            if len(renaming[-1]) == 0: renaming = renaming[:-1]
+            new_list2.extend(renaming)
+        else:
+            new_list2.append(t)
+
+    list2 = new_list2
+
+    list1 = [t if not re.match(r"x\d+", t) else rename(t) for t in list1] # offset so that no two variables are shared acorss str1 and str2
+
+    # Create a matrix to store the distances
+    # Size is (len(list1) + 1) x (len(list2) + 1)
+    dp = [[0 for _ in range(len(list2) + 1)] for _ in range(len(list1) + 1)]
+    
+    # Initialize the first row and column
+    for i in range(len(list1) + 1):
+        dp[i][0] = i
+    for j in range(len(list2) + 1):
+        dp[0][j] = j
+        
+    # Fill the matrix
+    for i in range(1, len(list1) + 1):
+        for j in range(1, len(list2) + 1):
+            # If the elements are the same, no edit is needed
+            if list1[i-1] == list2[j-1]:
+                dp[i][j] = dp[i-1][j-1]
+            else:
+                # Take the minimum of the three possible operations:
+                # 1. Insert (dp[i][j-1] + 1)
+                # 2. Delete (dp[i-1][j] + 1)
+                # 3. Substitute (dp[i-1][j-1] + 1)
+                dp[i][j] = min(dp[i][j-1] + 1,      # Insert
+                               dp[i-1][j] + 1,      # Delete
+                               dp[i-1][j-1] + 1)    # Substitute
+                
+    # The final cell contains the Levenshtein distance
+    return dp[len(list1)][len(list2)]
+
+def levenshtein_with_mismatch_pairs(list2, list1):
+    """
+    Calculate the Levenshtein distance between two lists and return
+    the pairs of elements that caused non-zero cost edits.
+    
+    Args:
+        list1: The first list of strings
+        list2: The second list of strings
+        
+    Returns:
+        A tuple containing:
+        - The Levenshtein distance between the two lists
+        - A list of mismatch pairs, where each pair is either:
+          - (element1, None) for deletions
+          - (None, element2) for insertions
+          - (element1, element2) for substitutions
+    """
+    #initial renaming:
+    rename = lambda x: "specvar"+ str(int(x[1:]) - 1)
+    
+    def split_string(text, pattern=r"(x\d+)(.*)"):
+        match = re.match(pattern, text)
+        if match:
+            return match.groups()
+        else:
+            return None
+    
+    new_list2 = []
+    for t in list2:
+        if re.match(r"x\d+", t):
+            renaming = split_string(t)
+            if len(renaming[-1]) == 0: renaming = renaming[:-1]
+            new_list2.extend(renaming)
+        else:
+            new_list2.append(t)
+    list2 = new_list2
+
+    #similarly for list2
+    new_list1 = []
+    for t in list1:
+        if re.match(r"specvar\d+", t):
+            renaming = split_string(t, pattern=r"(specvar\d+)(.*)")
+            if len(renaming[-1]) == 0: renaming = renaming[:-1]
+            new_list1.extend(renaming)
+        else:
+            new_list1.append(t)
+
+    list1 = new_list1
+
+    list2 = [t if not re.match(r"x\d+", t) else rename(t) for t in list2] # offset so that no two variables are shared acorss str1 and str2
+
+
+    # Create a matrix to store the distances
+    dp = [[0 for _ in range(len(list2) + 1)] for _ in range(len(list1) + 1)]
+    
+    # Initialize the first row and column
+    for i in range(len(list1) + 1):
+        dp[i][0] = i
+    for j in range(len(list2) + 1):
+        dp[0][j] = j
+        
+    # Fill the matrix
+    for i in range(1, len(list1) + 1):
+        for j in range(1, len(list2) + 1):
+            if list1[i-1] == list2[j-1]:
+                dp[i][j] = dp[i-1][j-1]
+            else:
+                dp[i][j] = min(dp[i][j-1] + 1,      # Insert
+                               dp[i-1][j] + 1,      # Delete
+                               dp[i-1][j-1] + 1)    # Substitute
+    
+    # Backtrack to find the mismatch pairs
+    i, j = len(list1), len(list2)
+    mismatch_pairs = []
+    
+    while i > 0 or j > 0:
+        if i > 0 and j > 0 and list1[i-1] == list2[j-1]:
+            # Match - move diagonally (no mismatch to report)
+            i -= 1
+            j -= 1
+        elif j > 0 and (i == 0 or dp[i][j] == dp[i][j-1] + 1):
+            # Insertion - move left
+            mismatch_pairs.append((None, list2[j-1]))
+            j -= 1
+        elif i > 0 and (j == 0 or dp[i][j] == dp[i-1][j] + 1):
+            # Deletion - move up
+            mismatch_pairs.append((list1[i-1], None))
+            i -= 1
+        else:
+            # Substitution - move diagonally
+            mismatch_pairs.append((list1[i-1], list2[j-1]))
+            i -= 1
+            j -= 1
+    
+    # Reverse the pairs to get them in the correct order (from start to end)
+    mismatch_pairs.reverse()
+    
+    return dp[len(list1)][len(list2)], mismatch_pairs
+
 def compute_confusion_matrix(model, dataloader, last=False):
     global DEVICE
     model.eval()
     confusion_matrix = torch.zeros(4, 4)
     average_loss = 0
     count = 0
-
     with torch.no_grad():
         pbar = tqdm.tqdm(total=len(dataloader))
         for _, batch in enumerate(dataloader):
-            loss, out, classified_class, var_reg, gt_cls_mask, in_embs, in_tokens = teacher_forcing(model, batch)
+            _, loss, out, classified_class, var_reg, gt_cls_mask, in_embs, in_tokens, _ = teacher_forcing(model, batch)
 
             average_loss += loss.item()
             count += 1
             pbar.set_description(f"Loss: {loss.item()/count}")
             pbar.update(1)
 
-        for i in range(4):
-            for j in range(4):
-                confusion_matrix[i, j] += ((classified_class == j) & (gt_cls_mask == i)).sum().detach().cpu()
+            classified_class = classified_class.argmax(dim=-1).squeeze(0)
+            gt_cls_mask = gt_cls_mask.squeeze(0)
+            for i in range(4):
+                for j in range(4):
+                    confusion_matrix[i, j] += ((classified_class == j) & (gt_cls_mask == i)).sum().detach().cpu()
     return confusion_matrix
 
 def find_arity(lambda_term):
@@ -500,24 +703,21 @@ def eval_parses(gold_parse, parse):
 if __name__ == "__main__":
     import os
     import Levenshtein
-    #arguments
+    # #arguments
     l1_parser = argparse.ArgumentParser()
     l1_parser.add_argument("--confusion_matrix", action="store_true")
     l1_parser.add_argument("--levenshtein", action="store_true")
     l1_parser.add_argument("--csv", type=str, default="all_lev.csv")
     l1_parser.add_argument("--split", type=str, default="train")
     l1_parser.add_argument("--arity", action="store_true")
+    l1_parser.add_argument("--model_path", type=str, required=False)
+    l1_parser.add_argument("--last", action="store_true")
+    l1_parser.add_argument("--custom", action="store_true")
+    l1_parser.add_argument("--cpu", action="store_true")
 
     args = l1_parser.parse_args()
 
     if args.confusion_matrix:
-        parser = argparse.ArgumentParser()
-        parser.add_argument("--model_path", type=str, required=True)
-        parser.add_argument("--last", action="store_true")
-        parser.add_argument("--custom", action="store_true")
-
-        args = parser.parse_args()
-
         os.environ["CUDA_VISIBLE_DEVICES"] = "1"
         os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
@@ -533,7 +733,7 @@ if __name__ == "__main__":
         model = model.to(DEVICE)
 
         # --LOAD DATA
-        dataloader, valid_dataloader, test_dataloader = dataloader.data_init(1, last=args.last)
+        dataloader, valid_dataloader, test_dataloader = dataloader.data_init(1, last=args.last, inference=True)
 
 
         #-- CONFUSION MATRIX --
@@ -548,14 +748,75 @@ if __name__ == "__main__":
     elif args.levenshtein:
     
         #open csv file
+        great_sentence_pairs = []
         with open(args.csv, "r") as f:
             reader = csv.reader(f)
             lev_scores = []
             lev_scores_normed = []
             lev_scores_modified = []
             lev_scores_modified_normed = []
-            for row in tqdm.tqdm(reader, total=12006):
-                lev_score = levenstein_lambda_term(row[0].split(), row[1].split())
+
+            lev_types = {"missing constant": 0, "extra constant": 0, "mismatched constant": 0, "constant -> lambda": 0, "constant -> app":0, "constant -> var":0, \
+                         "missing variable": 0, "extra variable": 0, "mismatched variable": 0, "variable -> lambda": 0, "variable -> app":0, "variable -> constant":0, \
+                            "missing lambda": 0, "extra lambda": 0, "lambda -> app":0, "lambda -> constant":0, "lambda -> var":0, \
+                                "missing application": 0, "extra application": 0, "application -> lambda":0, "application -> constant":0, "application -> var":0}
+
+            for row in tqdm.tqdm(reader, total=16363):
+                lev_score, lev_seq = levenshtein_with_mismatch_pairs(row[0].split(), row[1].split())#levenstein_lambda_term(row[0].split(), row[1].split())
+                
+                if lev_score <= 7:
+                    for s in lev_seq:
+                        if s[0] is None:
+                            if s[1] == "λ":
+                                lev_types["missing lambda"] += 1
+                            elif s[1] == "(":
+                                lev_types["missing application"] += 1
+                            elif re.match(r"specvar\d+", s[1]): 
+                                lev_types["missing variable"] += 1
+                            else:
+                                lev_types["missing constant"] += 1
+                        elif s[1] is None:
+                            if s[0] == "λ":
+                                lev_types["extra lambda"] += 1
+                            elif s[0] == "(":
+                                lev_types["extra application"] += 1
+                            elif re.match(r"specvar\d+", s[0]): 
+                                lev_types["extra variable"] += 1
+                            else:
+                                lev_types["extra constant"] += 1
+                        elif s[0] == "λ":
+                            if s[1] == "(":
+                                lev_types["lambda -> app"] += 1
+                            elif re.match(r"specvar\d+", s[1]):
+                                lev_types["lambda -> var"] += 1
+                            else:
+                                lev_types["lambda -> constant"] += 1
+                        elif s[0] == "(":
+                            if s[1] == "λ":
+                                lev_types["application -> lambda"] += 1
+                            elif re.match(r"specvar\d+", s[1]):
+                                lev_types["application -> var"] += 1
+                            else:
+                                lev_types["application -> constant"] += 1
+                        elif re.match(r"specvar\d+", s[0]):
+                            if s[1] == "λ":
+                                lev_types["variable -> lambda"] += 1
+                            elif s[1] == "(":
+                                lev_types["variable -> app"] += 1
+                            elif re.match(r"specvar\d+", s[1]):
+                                lev_types["mismatched variable"] += 1
+                            else:
+                                lev_types["variable -> constant"] += 1
+                        else:
+                            if s[1] == "λ":
+                                lev_types["constant -> lambda"] += 1
+                            elif s[1] == "(":
+                                lev_types["constant -> app"] += 1
+                            elif re.match(r"specvar\d+", s[1]):
+                                lev_types["constant -> var"] += 1
+                            else:
+                                lev_types["mismatched constant"] += 1
+
                 # print("True levenshtein distance: ", "Normalized true lev dist: ", )
                 # print("Modified levenhtein distance: ", "Normalized modified lev dist: ", )
                 lev_scores_modified.append(lev_score)
@@ -563,23 +824,127 @@ if __name__ == "__main__":
                 t_lev_scores = Levenshtein.distance(row[0], row[1])
                 lev_scores.append(t_lev_scores)
                 lev_scores_normed.append(t_lev_scores/len(row[0]))
+
+                if lev_score <= 0:
+                    great_sentence_pairs.append((row[0], row[1], lev_score, t_lev_scores, lev_scores_modified_normed[-1], lev_scores_normed[-1]))
         #plot histograms on separate plots
         # create plot with subplots
         # print(len(lev_scores), len(lev_scores_normed))
-        fig, axes = plt.subplots(2, 2, figsize=(10, 10))
+        
+        # Create the figure and subplots
+        fig, axes = plt.subplots(2, 2, figsize=(12, 10))
         axes = axes.flatten()
-        axes[0].hist(lev_scores, bins=30, alpha=0.5, label="True Levenshtein Distance")
-        axes[1].hist(lev_scores_normed, bins=30, alpha=0.5, label="Normalized True Levenshtein Distance")
-        axes[2].hist(lev_scores_modified, bins=30, alpha=0.5, label="Modified Levenshtein Distance")
-        axes[3].hist(lev_scores_modified_normed, bins=30, alpha=0.5, label="Normalized Modified Levenshtein Distance")
-        for i, ax in enumerate(axes):
+
+        # Data arrays to store bin information
+        all_bin_edges = []
+        all_bin_counts = []
+        all_dataset_names = ["True Levenshtein Distance", 
+                            "Normalized True Levenshtein Distance",
+                            "Modified Levenshtein Distance", 
+                            "Normalized Modified Levenshtein Distance"]
+        all_datasets = [lev_scores, lev_scores_normed, lev_scores_modified, lev_scores_modified_normed]
+
+        # Plot histograms using Seaborn and capture bin information
+        for i, (data, ax, name) in enumerate(zip(all_datasets, axes, all_dataset_names)):
+            # Create the Seaborn histogram
+            hist = sns.histplot(data, bins=30, kde=False, ax=ax, label=name)
+            
+            # Extract the actual bin edges and counts from the histogram
+            patch_list = hist.patches
+            bin_counts = [patch.get_height() for patch in patch_list]
+            bin_edges = [patch.get_x() for patch in patch_list]
+            bin_edges.append(patch_list[-1].get_x() + patch_list[-1].get_width())
+            
+            all_bin_edges.append(bin_edges)
+            all_bin_counts.append(bin_counts)
+            
             ax.legend()
-            #step the x axis by 0.5 
-            if i == 3: ax.set_xticks(np.arange(0, 5, 0.5))
             ax.grid(True, alpha=0.3)
-        #main title
-        fig.suptitle(f"{args.split} set Levenshtein Distances")
-        plt.savefig(f"{args.split}_lev.png")
+            
+            # Set x-ticks for the last subplot
+            if i == 3:
+                ax.set_xticks(np.arange(0, 5, 0.5))
+            
+            # Improve aesthetics
+            sns.despine(ax=ax)  # Remove top and right spines
+
+        # Add a main title
+        fig.suptitle(f"{args.split} set Levenshtein Distances", fontsize=16)
+
+        # Adjust layout and save
+        plt.tight_layout(rect=[0, 0, 1, 0.96])  # Make room for the title
+        plt.savefig(f"{args.split}_lev.png", dpi=300)
+        plt.show()
+
+        # Print bin information for each dataset
+        for name, bin_edges, counts in zip(all_dataset_names, all_bin_edges, all_bin_counts):
+            print(f"\nBin information for {name}:")
+            print("Bin Edges | Count")
+            print("-" * 30)
+            
+            for i in range(len(counts)):
+                # Format to show bin ranges (left edge to right edge)
+                bin_range = f"{bin_edges[i]:.3f} - {bin_edges[i+1]:.3f}"
+                print(f"{bin_range:15} | {int(counts[i])}")
+
+        #print average:
+        print("True Levenshtein Distance: ", np.mean(lev_scores))
+        print("Normalized True Levenshtein Distance: ", np.mean(lev_scores_normed))
+        print("Modified Levenshtein Distance: ", np.mean(lev_scores_modified))
+        print("Normalized Modified Levenshtein Distance: ", np.mean(lev_scores_modified_normed))
+
+        #write great sentences
+        with open("great_sentence_pairs.csv", "w") as f:
+            writer = csv.writer(f)
+            for row in great_sentence_pairs:
+                writer.writerow(row)
+
+        # types of edits:
+        # Convert dictionary to DataFrame for Seaborn
+        df = pd.DataFrame(list(lev_types.items()), columns=['Type', 'Frequency'])
+
+        # Group the types by their prefix for coloring
+        df['Category'] = df['Type'].apply(lambda x: x.split()[0] if '->' not in x else x.split(' -> ')[0])
+
+        # Sort by category and frequency for better visualization
+        df = df.sort_values(['Category', 'Frequency'], ascending=[True, False])
+
+        # Create the plot
+        plt.figure(figsize=(16, 10))
+        ax = sns.barplot(x='Type', y='Frequency', hue='Category', data=df, palette='viridis')
+
+        # Rotate x-axis labels for better readability
+        plt.xticks(rotation=45, ha='right')
+        plt.tight_layout(pad=3)
+
+        # Add title and labels
+        plt.title('Frequency of Levenshtein Types', fontsize=16)
+        plt.xlabel('Type', fontsize=12)
+        plt.ylabel('Frequency', fontsize=12)
+
+        # Add a legend
+        plt.legend(title='Category', bbox_to_anchor=(1.05, 1), loc='upper left')
+
+        # Show the plot
+        plt.savefig('levenshtein_types.png', dpi=300, bbox_inches='tight')
+        plt.show()
+
+        # Print the frequency for each type
+        print("Levenshtein Type Frequencies:")
+        for type_name, frequency in lev_types.items():
+            print(f"{type_name}: {frequency}")
+
+        #get the list of edit sequences:
+        lev_scores_modified = sorted(lev_scores_modified)
+        lev_scores_modified_normed = sorted(lev_scores_modified_normed)
+        print("34 percent of sequences have an edit distance <= ", lev_scores_modified[int(0.34*len(lev_scores_modified))])
+        print("44 percent of sequences have an edit distance <= ", lev_scores_modified[int(0.44*len(lev_scores_modified))])
+        print("53 percent of sequences have an edit distance <= ", lev_scores_modified[int(0.53*len(lev_scores_modified))])
+        print("34 percent of sequences have an edit ratio <= ", lev_scores_modified_normed[int(0.34*len(lev_scores_modified_normed))])
+        print("44 percent of sequences have an edit ratio <= ", lev_scores_modified_normed[int(0.44*len(lev_scores_modified_normed))])
+        print("53 percent of sequences have an edit ratio <= ", lev_scores_modified_normed[int(0.53*len(lev_scores_modified_normed))])
+        
+        
     elif args.arity:
         #load all the data:
         DATA_PATH = "/w/150/lambda_squad/lambdaBERT/data/"
@@ -606,4 +971,9 @@ if __name__ == "__main__":
         plt.title("Distribution of Function Arity in Lambda Terms")
         plt.grid(True, alpha=0.3)
         plt.savefig("arity_dist.png")
+
+    # t1 = "( What ( λ x1 ( ( do plants ( λ x2 ( ( ( ( in ( their environment ( λ x3 ( λ x4 ( ( do x3 x4 x1 x2".split()
+    # t2 = "( What ( λ specvar0 ( ( do plants ( λ specvar1 ( ( ( ( in ( their environment ( λ specvar2 ( λ specvar3 ( ( do specvar2 specvar3 specvar0 specvar1?".split()
+
+    # levenshtein_distance_for_lists(t1, t2)
 

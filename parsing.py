@@ -18,6 +18,9 @@ class Variable(LambdaTerm):
 
     def __repr__(self):
         return self.name
+    
+    def __len__(self):
+        return 0
 
 class Abstraction(LambdaTerm):
     def __init__(self, variable, body, applications=0, abstractions=0):
@@ -28,6 +31,9 @@ class Abstraction(LambdaTerm):
 
     def __repr__(self):
         return f"λ{self.variable}"
+    
+    def __len__(self):
+        return self.applications + self.abstractions
 
 class Application(LambdaTerm):
     def __init__(self, function, argument, applications=0, abstractions=0):
@@ -38,6 +44,9 @@ class Application(LambdaTerm):
 
     def __repr__(self):
         return "@"
+
+    def __len__(self):
+        return self.applications + self.abstractions
     
 def application(stack):
     args = [] 
@@ -136,7 +145,7 @@ def make_lambda_term_list(words, lambda_term):
         term = lambda_term_list[i]
         if var_pattern.match(term):
             if term not in var_dict:
-                var_dict[term] = f"x{len(var_dict)}"
+                var_dict[term] = f"spec_var{len(var_dict)}"
             lambda_term_list[i] = var_dict[term]
         i += 1
     #remove ) brackets:
@@ -162,14 +171,21 @@ def get_subtree_list(forest):
         subtrees += get_subtrees(tree)
     return subtrees
 
-def fake_eval(true_tree, inf_forest, count_abstractions=False):
+def fake_eval(true_tree, inf_forest, count_abstractions=False, count_applications=False):
     true_subtrees = get_subtree_list([true_tree])
     inf_subtrees = get_subtree_list(inf_forest)
+
+    if len(true_subtrees) == 0:
+        return []
+
+    if len(inf_subtrees) == 0:
+        return None
+    
     checker = (lambda x, y: x.applications == y.applications) if not count_abstractions \
-          else (lambda x, y: (x.applications == y.applications) & (x.abstractions == y.abstractions))
+          else (lambda x, y: (x.applications == y.applications if count_applications else True) & (x.abstractions == y.abstractions))
     recall = len(set([t_t for t_t in true_subtrees for i_t in inf_subtrees if checker(t_t, i_t)]))/len(true_subtrees)
     precision = len(set([i_t for i_t in inf_subtrees for t_t in true_subtrees if checker(t_t, i_t)]))/len(inf_subtrees)
-    return (precision * recall)/(precision + recall) if (precision+recall > 0) else 0 , precision, recall
+    return 2*(precision * recall)/(precision + recall) if (precision+recall > 0) else 0 , precision, recall
 
 def print_tree(nodes, prefix="", is_last=True):
     if type(nodes) is not list:
@@ -187,7 +203,7 @@ def print_tree(nodes, prefix="", is_last=True):
 
 if __name__ == "__main__":
 
-    files = ["/w/150/lambda_squad/lambdaBERT/train_all_lev.csv", "/w/150/lambda_squad/lambdaBERT/valid_all_lev.csv", "/w/150/lambda_squad/lambdaBERT/test_all_lev.csv"]
+    files = ["/w/150/lambda_squad/lambdaBERT/outputs/test_all_lev.csv"]#["/w/150/lambda_squad/lambdaBERT/outputs/train_all_lev.csv", "/w/150/lambda_squad/lambdaBERT/outputs/valid_all_lev.csv", "/w/150/lambda_squad/lambdaBERT/outputs/test_all_lev.csv"]
     
     f = open("/w/150/lambda_squad/lambdaBERT/data/dataset_splits.pkl", "rb")
     data_split = pickle.load(f)
@@ -204,22 +220,29 @@ if __name__ == "__main__":
         f_scores, precisions, recalls = [], [], []
         forest_sizes = []
         forests = []
+
+        study_precisions = []
+
+        double_tree_terms = []
         for i, row in tqdm(df.iterrows(), total=len(df)):
             lambda_term_list = row["inf_term"].split()
             # true_term_list = row["true_term"].split()
             sent_index = split_numbers[i]
-            true_sentence = main_df.iloc[sent_index].sentence
+            true_sentence = eval(main_df.iloc[sent_index].tags)
             f1 = open("/".join(main_df.iloc[sent_index].path.split("/")[1:]))
             true_term_list = f1.readlines()[0].strip()
             f1.close()
             
             _, words = preprocess_sent(true_sentence)
             true_term_list = make_lambda_term_list(words, true_term_list)
-
+            
             try:
                 trees = parse_lambda_term(lambda_term_list)
                 forests.append(trees)
                 forest_sizes.append(len(trees))
+                if len(trees) == 2:
+                    double_tree_terms.append((" ".join(lambda_term_list), " ".join(words), " ".join(true_term_list)))
+                    
             except:
                 baddies.append(i)
                 continue
@@ -231,10 +254,21 @@ if __name__ == "__main__":
                 print(e)
                 print(traceback.format_exc())
                 raise Exception("This should not have happened. Lamda term is ", true_term_list)
-            f_score, precision, recall = fake_eval(true_tree, trees, count_abstractions=False)
-            f_scores.append(f_score)
-            precisions.append(precision)
-            recalls.append(recall)
+            
+            x = fake_eval(true_tree, trees, count_abstractions=False, count_applications=True)
+            if x is None:
+                baddies.append(i)
+            elif x == []:
+                continue
+            else:
+                f_score, precision, recall = x
+                f_scores.append(f_score)
+                precisions.append(precision)
+                recalls.append(recall)
+
+                if 0.3 <= precision < 0.4:
+                    study_precisions.append((row["inf_term"], row["true_term"], true_sentence))
+
         
         print("Proportion of bad trees: ", len(baddies)/len(df))
 
@@ -242,6 +276,18 @@ if __name__ == "__main__":
         with open(f"{split}_forests.pkl", "wb") as f:
             pickle.dump(forests, f)
 
+        #write csv file of double trees;
+        with open(f"{split}_double_trees.csv", "w") as f:
+            f.write("inf_term,true_term,sentence\n")
+            for term in double_tree_terms:
+                f.write(f"{term[0]},{term[2]},{term[1]}\n")
+
+        print("Mean forest size: ", sum(forest_sizes)/len(forest_sizes))
+        print("Median forest size: ", sorted(forest_sizes)[len(forest_sizes)//2])
+        print("Number of sentences with size of 1", forest_sizes.count(1))
+        print("-----")
+        
+        suffix = "app"
         # Create histogram using seaborn for better default styling
         plt.figure(figsize=(10, 10))
         sns.histplot(forest_sizes, bins=max(forest_sizes))
@@ -253,7 +299,9 @@ if __name__ == "__main__":
         
         # Add grid for better readability
         plt.grid(True, alpha=0.3)
-        plt.savefig(f"{split}_forest_sizes1.png")
+        #restrict the x-axis to 50
+        plt.xlim(0, 50)
+        plt.savefig(f"{split}_forest_sizes.png")
 
         plt.clf()
 
@@ -264,7 +312,7 @@ if __name__ == "__main__":
         plt.ylabel('Count')
         plt.title('F1 scores of lambda terms in {} set of length {}'.format(split, len(df)))
         plt.grid(True, alpha=0.3)
-        plt.savefig(f"{split}_f_scores1.png")
+        plt.savefig(f"{split}_f_scores_{suffix}.png")
         
         plt.clf()
         plt.figure(figsize=(10, 10))
@@ -273,7 +321,7 @@ if __name__ == "__main__":
         plt.ylabel('Count')
         plt.title('Precisions of lambda terms in {} set of length {}'.format(split, len(df)))
         plt.grid(True, alpha=0.3)
-        plt.savefig(f"{split}_precisions1.png")
+        plt.savefig(f"{split}_precisions_{suffix}.png")
 
         plt.clf()
         plt.figure(figsize=(10, 10))
@@ -282,13 +330,19 @@ if __name__ == "__main__":
         plt.ylabel('Count')
         plt.title('Recalls of lambda terms in {} set of length {}'.format(split, len(df)))
         plt.grid(True, alpha=0.3)
-        plt.savefig(f"{split}_recalls1.png")
+        plt.savefig(f"{split}_recalls_{suffix}.png")
 
         print("--------")
         print("Average F-score: ", sum(f_scores)/len(f_scores))
         print("Average Precision: ", sum(precisions)/len(precisions))
         print("Average Recall: ", sum(recalls)/len(recalls))
         print("--------")
+
+        #save study precisions
+        with open(f"{split}_study_precisions.csv", "w") as f:
+            f.write("inf_term,true_term,sentence\n")
+            for term in study_precisions:
+                f.write(f"{term[0]},{term[1]},{term[2]}\n")
 
 
 # #test cases:

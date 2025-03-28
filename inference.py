@@ -24,6 +24,8 @@ BOS_ID=101
 import time
 from utils import ThreadLockDict
 
+DEVICE = torch.device("cuda")
+
 def get_mapped_out_sequences(in_tokens, out_tokens, spec_tokens=False):
     in_sentence = TOKENIZER.convert_ids_to_tokens(in_tokens)
     out_sentence = TOKENIZER.convert_ids_to_tokens(out_tokens)
@@ -88,12 +90,12 @@ def get_out_list(out, classified_class, var_reg, in_embs, in_tokens, dynamic_var
                 #choose the variable w the highest similarity to the current one:
                 sim = torch.nn.functional.cosine_similarity(var_reg[i].unsqueeze(0), torch.stack(all_vars), dim=1)
                 max_sim_index = sim.argmax().item()
-                out_list[i] = f"x{max_sim_index}"
+                out_list[i] = f"specvar{max_sim_index}"
     else:
         for i in var_indices:
             out_emb = out[i]
             var_idx = get_closest_var_idx(out_emb, var_count=i)
-            t = TOKENIZER.encode(f"x{var_idx}", add_special_tokens=False)
+            t = TOKENIZER.encode(f"specvar{var_idx}", add_special_tokens=False)
             out_list = out_list[:i+offset] + t + out_list[i+1+offset:]
             offset += len(t) - 1
             # out_list[i] = f"x{var_idx}"
@@ -187,7 +189,7 @@ def model_inference(model, dataloader, max_len=200, last=False, beam_size=1, spl
     # csv_writer.writerows(outs)
     # csv_file.close()
 
-    csv_file = open(f"{split}_all_lev.csv", "a")
+    csv_file = open(f"outputs/{split}_all_lev_latest.csv", "a")
     csv_writer = csv.writer(csv_file)
     csv_writer.writerows(for_dist_out)
     csv_file.close()
