@@ -13,7 +13,8 @@ import traceback, pickle
 #create a directory where the key is a csv. each row has first column as the raw text sentence, and the second col being the 
 # path to the file that stores all its lambda terms
 
-DATA_PATH = "/w/150/lambda_squad/lambdaBERT/data/"
+
+DATA_PATH = "/home/mishaalk/projects/def-gpenn/mishaalk/lambdaBERT/data/"
 BOS_TOKEN_LAST = [[[ 6.6404e-03,  1.2032e-01, -2.5759e-02,  1.1922e-01,  1.6584e-01,
         -2.4184e-02,  4.3246e-02, -9.4100e-02,  4.8467e-02,  1.7669e-01,
         -7.7217e-02, -2.4837e-02, -1.4056e-01,  1.7926e-01, -6.4828e-01,
