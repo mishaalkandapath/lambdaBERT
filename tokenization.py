@@ -1,14 +1,23 @@
-from transformers import BertTokenizerFast, BertModel
+from transformers import BertTokenizerFast, BertModel, AutoTokenizer, XLMRobertaModel
 import torch
 import re
 from collections import defaultdict
 import random
 import seaborn as sns
-TOKENIZER = BertTokenizerFast.from_pretrained("bert-base-multilingual-cased") #("bert-base-uncased")
 
-BERT_MODEL = BertModel.from_pretrained("bert-base-multilingual-cased", output_hidden_states=True)
+from parsing import *
+
+# TOKENIZER = BertTokenizerFast.from_pretrained("bert-base-multilingual-cased") #
+# TOKENIZER = BertTokenizerFast.from_pretrained("bert-base-uncased")
+TOKENIZER = AutoTokenizer.from_pretrained("FacebookAI/xlm-roberta-base")
+BERT_MODEL = XLMRobertaModel.from_pretrained("FacebookAI/xlm-roberta-base")
+# BERT_MODEL = BertModel.from_pretrained("bert-base-multilingual-cased", output_hidden_states=True)
+# BERT_MODEL = BertModel.from_pretrained("bert-base-uncased", output_hidden_states=True)
 
 # BIG_VAR_EMBS = -torch.ones((2000, 768)) * (torch.tensor(range(1, 2001)))[:, None]
+
+STORE_PATH = "/w/150/lambda_squaddd/"
+# STORE_PATH = "/w/nobackup/436/lambda/"
 
 LAMBDA = [-2.6304e+00,  5.8553e-01,  4.2383e+00, -3.4630e+00, -5.1004e+00,
          6.3341e-01, -2.0096e+00,  1.1209e+00, -2.3989e-01,  1.1458e-01,
@@ -775,6 +784,8 @@ def preprocess_sent(sentence):
 
     for i, word in enumerate(words):
         if "." in word and len(list(set(word))) != 1: words[i] = words[i].replace(".", "")
+        # tiny preprocessing change λ to µ 
+        if word == "λ": words[i] = "µ"
 
     tokens = TOKENIZER(" ".join(words), add_special_tokens=True, return_tensors="pt", return_offsets_mapping=True)
     return tokens, words
@@ -791,7 +802,6 @@ def create_out_tensor(sentence, lambda_term):
     # for every offset in lambda term that is in the map, replace w the tokens in the corresponding list as value in the first map\
 
     tokens, words = preprocess_sent(sentence)
-    
     word_mapping = tokens.words()
     word_mapping[0] = -1
     word_mapping[-1] = -1
@@ -859,7 +869,11 @@ def create_out_tensor(sentence, lambda_term):
             if char != " ": lambda_term_list.append(char)
         else: 
             acc += char
-    if acc != "": lambda_term_list.append(acc)
+    if acc != "": 
+        if acc == "λ":
+            lambda_term_list.append("µ")
+        else:lambda_term_list.append(acc)
+
     lambda_term_list = [w.replace("\u200e", "") for w in lambda_term_list]
 
     replace_copy = lambda_term_list.copy()
@@ -903,7 +917,7 @@ def create_out_tensor(sentence, lambda_term):
                     min_indx = i
         if min_indx == 500000: 
             if word != "": 
-                print("First instance Could not find a match for ", word)
+                print("First instance Could not find a match for ", word, "in lambda term ", )
             continue
         #replace with something random
         lambda_term_list[min_indx] = replacement*len(word)
@@ -1024,8 +1038,11 @@ if __name__ == "__main__":
     import os
     from tqdm import tqdm
     import matplotlib.pyplot as plt
-    df = pd.read_csv("data/input_sentences.csv", header=None)
+    df = pd.read_csv("lambdaBERT/data/input_sentences.csv", header=None)
     sentences = len(df)     
+
+    bad_sentences = []
+    exceptions = []
 
     #8147 bad - devanagiri script
 
@@ -1033,28 +1050,53 @@ if __name__ == "__main__":
     indices = random.sample(range(sentences), 10) #-- debugging
     terms =[]
     var_counts = []
-    for i in tqdm(range(sentences)):
+    for i in tqdm(range(sentences)): # 132621, 132622+4
     # for i in indices:
     #40000+2902+930+5
      #erorr in 929, 
         # error here: i+9 + 56+75+477+25, i+9 + 56+75+477+26+128, i+9 + 56+75+477+26+129+278, i+9 + 56+75+477+26+129+279+111+724, i+9 + 56+75+477+26+129+279+111+725+482, i+9 + 56+75+477+26+129+279+111+725+483+6606+3757, i+9 + 56+75+477+26+129+279+111+725+483+6606+3757+157, i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5809, i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5809+4, i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5809+4+2113, i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5810+5+2114 + 2626,i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5810+5+2114 + 2626 + 1396,i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5810+5+2114+2627+1398+200, i+9 + 56+75+477+26+129+279+111+725+483+6606+3758+158+5810+5+2114+2627+1398+200+3440, +4453, +28,+10447, +5700
-        # gen_sent = eval(df.iloc[i, 1])
+        gen_sent = eval(df.iloc[i, 1])
+
+        path = df.iloc[i, 2]
+        path = "/w/150/lambda_squad/lambdaBERT/data/" + path[len("lambdaBERT/data/"):]
+        with open(path, 'r') as f:
+            lambda_terms = f.readlines()
+
+        # choose the simplest lambda term 
+        simplest_term, smallest_depth = None, 100000
+        _, words = preprocess_sent(gen_sent)
+        for term in lambda_terms:
+            term2 = make_lambda_term_list(words, term.strip())
+            term2 = [t for t in term2 if t != ")"]
+            tree = parse_lambda_term_1(term2)[0]
+            d = find_height_tree(tree)
+            if d < smallest_depth:
+                smallest_depth = d
+                simplest_term = term.strip()
+        lambda_terms = simplest_term
+
+        # or just choose the first:
+        # lambda_terms = lambda_terms[0].strip()
+
+        lambda_terms = lambda_terms.replace(")", "")
+        # try:
+        sent_emb, sent_emb_last, target_emb, target_emb_last, target_tokens, var_mask, lambda_mask, app_mask = create_out_tensor(gen_sent, lambda_terms)
+        # except Exception as e:
+        #     exceptions.append(e)
+        #     bad_sentences.append(i)
+        #     continue
+        # print(" ".join(convert_lambda_tokens(TOKENIZER.convert_ids_to_tokens([101 if t<0 else t for t in target_tokens]), lambda_mask, var_mask, app_mask)))
+
+        if os.path.exists(f"{STORE_PATH + df.iloc[i, 2][:-4]}.pt"): 
+            #delete it
+            os.remove(f"{STORE_PATH + df.iloc[i, 2][:-4]}.pt")
+        # elif not os.path.exists(f"{STORE_PATH + '/'.join(df.iloc[i, 2][:-4].split('/')[:-1])}"):
+        #     os.makedirs(f"{STORE_PATH + '/'.join(df.iloc[i, 2][:-4].split('/')[:-1])}")
+
 
         # path = df.iloc[i, 2]
         # path = "/w/150/lambda_squad/lambdaBERT/data/" + path[len("lambdaBERT/data/"):]
-        # with open(path, 'r') as f:
-        #     lambda_terms = f.readlines()[0].strip()
-        # lambda_terms = lambda_terms.replace(")", "")
-        # sent_emb, sent_emb_last, target_emb, target_emb_last, target_tokens, var_mask, lambda_mask, app_mask = create_out_tensor(gen_sent, lambda_terms)
-
-        # # print(" ".join(convert_lambda_tokens(TOKENIZER.convert_ids_to_tokens([101 if t<0 else t for t in target_tokens]), lambda_mask, var_mask, app_mask)))
-
-        # if os.path.exists(f"/w/150/lambda_squad/{df.iloc[i, 2][:-4]}.pt"): 
-        #     #delete it
-        #     os.remove(f"/w/150/lambda_squad/{df.iloc[i, 2][:-4]}.pt")
-        path = df.iloc[i, 2]
-        path = "/w/150/lambda_squad/lambdaBERT/data/" + path[len("lambdaBERT/data/"):]
-        sent_emb, sent_emb_last, target_emb, target_emb_last, target_tokens, var_mask, lambda_mask, app_mask = torch.load(path.replace("txt", "pt"))
+        # sent_emb, sent_emb_last, target_emb, target_emb_last, target_tokens, var_mask, lambda_mask, app_mask = torch.load(path.replace("txt", "pt"))
         
         max_vars = max(var_mask)
         if max_vars:
@@ -1064,8 +1106,13 @@ if __name__ == "__main__":
             target_emb[var_index_mask_no_temp != 0] = var_emb[non_zero_values]
             target_emb_last[var_index_mask_no_temp != 0] = var_emb[non_zero_values]
 
-        torch.save((sent_emb, sent_emb_last, target_emb, target_emb_last, target_tokens, var_mask, lambda_mask, app_mask), f"/w/150/lambda_squad/{df.iloc[i, 2][:-4]}.pt")
-
+        torch.save((sent_emb, sent_emb_last, target_emb, target_emb_last, target_tokens, var_mask, lambda_mask, app_mask), f"{STORE_PATH+df.iloc[i, 2][:-4]}.pt")
+    print(f"Bad sentences: {len(bad_sentences)}")
+    print(bad_sentences)
+    #write exceptiosn to file
+    with open("exceptions.txt", "w") as f:
+        for e in exceptions:
+            f.write(str(e) + "\n")
    
    
     # print((sentences))
@@ -1091,7 +1138,8 @@ if __name__ == "__main__":
 
 
 
-
+# bad sentences for bert base ucnased: 
+# [8076, 8345, 18879, 18884, 23207, 23358, 23359, 62121, 62224, 70190, 85396, 85398, 85409, 85436, 91424, 91426, 107889, 126868, 126918, 129526, 132621, 132626]
 
 
         

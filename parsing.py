@@ -1,5 +1,5 @@
 import re
-from tokenization import preprocess_sent
+# from tokenization import preprocess_sent
 from tqdm import tqdm 
 import pandas as pd
 import pickle
@@ -65,7 +65,7 @@ def application(stack):
         stack.append(func)
     return stack
 
-def parse_lambda_term(term, return_offset=False):
+def parse_lambda_term_1(term, return_offset=False):
     stack = []
     i = 0
     
@@ -80,7 +80,7 @@ def parse_lambda_term(term, return_offset=False):
             var = term[i+1]
             i += 2  # Skip '.'
             # Parse the body of the abstraction
-            body, offset = parse_lambda_term(term[i:], return_offset=True)
+            body, offset = parse_lambda_term_1(term[i:], return_offset=True)
             # if type(body) is str:
             #     print(body, stack, term)
             #what came just before is a bracket we dont need that anymore
@@ -200,6 +200,16 @@ def print_tree(nodes, prefix="", is_last=True):
             print_tree(node.body, prefix + ("    " if is_last else "│   "), True)
         elif isinstance(node, Variable):
             print(prefix + ("└── " if is_last else "├── ") + str(node))
+
+def find_height_tree(tree):
+    if isinstance(tree, Variable):
+        return 0
+    elif isinstance(tree, Abstraction):
+        return 1 + find_height_tree(tree.body)
+    elif isinstance(tree, Application):
+        return 1 + max(find_height_tree(tree.function), find_height_tree(tree.argument))
+    else:
+        raise ValueError("Invalid tree structure")
 
 if __name__ == "__main__":
 
