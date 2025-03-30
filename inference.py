@@ -4,7 +4,7 @@ import dataloader
 import tqdm, csv, random, pandas as pd
 from tokenization import get_bert_emb, TOKENIZER, LAMBDA, OPEN_RRB, BERT_MODEL
 from dataloader import SEP_TOKEN, BOS_TOKEN, BOS_TOKEN_LAST
-from inference_model import InferenceModel, get_closest_idx
+from inference_model import InferenceModel, get_closest_idx, get_closest_var_idx
 
 import torch 
 import torch.nn as nn
@@ -24,70 +24,115 @@ BOS_ID=101
 import time
 from utils import ThreadLockDict
 
-def get_out_list(out, classified_class, var_reg, in_embs, in_tokens):
+DEVICE = torch.device("cuda")
+
+def get_mapped_out_sequences(in_tokens, out_tokens, spec_tokens=False):
+    in_sentence = TOKENIZER.convert_ids_to_tokens(in_tokens)
+    out_sentence = TOKENIZER.convert_ids_to_tokens(out_tokens)
+    assert in_tokens == TOKENIZER.encode(" ".join(in_sentence)), f"{in_tokens} != {TOKENIZER.encode(' '.join(in_sentence), add_special_tokens=False)}"
+    if spec_tokens:
+        in_sentence = in_sentence[1:-1]
+        out_sentence = out_sentence[1:-1]
+
+    in_sentence_mapping = TOKENIZER(" ".join(in_sentence), return_offsets_mapping=True)
+    out_sentence_mapping = TOKENIZER(" ".join(out_sentence), return_offsets_mapping=True)
+    pass
+
+def obtain_target_lambda_sequence(in_tokens, var_indices_no, lambda_indices, app_indices):
+    in_tokens[lambda_indices] = 475
+    in_tokens[app_indices] = 113
+    in_tokens[in_tokens == -1] = 0
+
+    #mark the var_indices
+    var_indices = torch.where(var_indices_no != 0)[0]
+    in_tokens = in_tokens.tolist()
+    offset = 0
+    for i in var_indices.tolist():
+        t = TOKENIZER.encode(f"x{var_indices_no[i]}", add_special_tokens=False)
+        in_tokens = in_tokens[:i+offset] + t + in_tokens[i+1+offset:]
+        offset += len(t) - 1
+    in_tokens = torch.tensor(in_tokens)
+
+    word_list = TOKENIZER.decode(in_tokens).split()
+    return word_list[1:-1]
+
+def get_out_list(out, classified_class, var_reg, in_embs, in_tokens, dynamic_vars=False, get_indices=False):
     out_list = []
     if len(classified_class.shape) > 1: classified_class = classified_class.argmax(dim=-1).squeeze(0)
     for i in range(out.size(0)):
         leftover_words = torch.count_nonzero(classified_class[:i] == 0) == in_embs.size(0) - 2
         if classified_class[i] == 0:
-            token_idx = in_tokens[get_closest_idx(out[i:i+1, :], in_embs, in_tokens)]
+            token_idx = in_tokens[get_closest_idx(out[i, :], in_embs, in_tokens)]
             out_list.append(token_idx)
         else:
             out_list.append(101)
 
-    var_reg = var_reg.squeeze(0)
-    out_list = TOKENIZER.convert_ids_to_tokens(out_list) 
+    if dynamic_vars: var_reg = var_reg.squeeze(0)
+    
     lambda_indices, app_indices, var_indices = torch.where(classified_class == 2)[0].tolist(), torch.where(classified_class == 3)[0].tolist(), torch.where(classified_class == 1)[0].tolist()
 
     for i in lambda_indices:
-        out_list[i] = "λ"
+        out_list[i] = 475#"λ"
 
     for i in app_indices:
-        out_list[i] = "("
+        out_list[i] = 113#"("
     
     # time for variables
-    var_dict = {}
-    for i in var_indices:
-        if len(var_dict) == 0 or out_list[i-1] == "λ": 
-            out_list[i] = f"x{len(var_dict)}"
-            var_dict[len(var_dict)] = var_reg[i]
-        else:
-            all_vars = list(var_dict.values())
-            #choose the variable w the highest similarity to the current one:
-            sim = torch.nn.functional.cosine_similarity(var_reg[i].unsqueeze(0), torch.stack(all_vars), dim=1)
-            max_sim_index = sim.argmax().item()
-            out_list[i] = f"x{max_sim_index}"
-            # min_sim = 0
-            # min_key = 0
-            # for key in var_dict:
-            #     sim = torch.nn.functional.cosine_similarity(var_reg[i], var_dict[key], dim=0)
-            #     if sim > min_sim:
-            #         min_sim = sim
-            #         min_key = key
-            # if min_sim > 0.99:
-            #     out_list[i] = f"x{min_key}"
-            # else:
-            #     var_dict[len(var_dict)] = var_reg[i]
-            #     out_list[i] = f"x{len(var_dict)}"
+    offset = 0
+    if dynamic_vars:
+        var_dict = {}
+        for i in var_indices:
+            if len(var_dict) == 0 or out_list[i-1] == "λ": 
+                out_list[i] = f"x{len(var_dict)}"
+                var_dict[len(var_dict)] = var_reg[i]
+            else:
+                all_vars = list(var_dict.values())
+                #choose the variable w the highest similarity to the current one:
+                sim = torch.nn.functional.cosine_similarity(var_reg[i].unsqueeze(0), torch.stack(all_vars), dim=1)
+                max_sim_index = sim.argmax().item()
+                out_list[i] = f"specvar{max_sim_index}"
+    else:
+        for i in var_indices:
+            out_emb = out[i]
+            var_idx = get_closest_var_idx(out_emb, var_count=i)
+            t = TOKENIZER.encode(f"specvar{var_idx}", add_special_tokens=False)
+            out_list = out_list[:i+offset] + t + out_list[i+1+offset:]
+            offset += len(t) - 1
+            # out_list[i] = f"x{var_idx}"
+    out_list = TOKENIZER.decode(out_list) 
+    out_list = out_list.split()
+    if get_indices:
+        return " ".join(out_list), out_list
     return " ".join(out_list)
 
 def teacher_forcing(model, batch):
     global BOS_TOKEN_LAST, BOS_TOKEN
     (in_tokens, in_embs, target_embs, target_tokens, var_index_mask_no, lambda_index_mask, app_index_mask, stop_mask, pad_mask, sent_pad_mask) = batch
     in_tokens, in_embs, target_embs, target_tokens, var_index_mask_no, lambda_index_mask, app_index_mask, stop_mask, pad_mask, sent_pad_mask = in_tokens.to(DEVICE), in_embs.to(DEVICE), target_embs.to(DEVICE), target_tokens.to(DEVICE), var_index_mask_no.to(DEVICE), lambda_index_mask.to(DEVICE), app_index_mask.to(DEVICE), stop_mask.to(DEVICE), pad_mask.to(DEVICE), sent_pad_mask.to(DEVICE)
+
+    true_tokens = obtain_target_lambda_sequence(target_tokens.squeeze(0), var_index_mask_no.squeeze(0), lambda_index_mask.squeeze(0), app_index_mask.squeeze(0))
+
     bos = target_embs[0, 0, :].unsqueeze(0).unsqueeze(0)
     seq_syntax = var_index_mask_no.type(torch.bool) + 2*lambda_index_mask.type(torch.bool) + 3*app_index_mask.type(torch.bool) 
-    out, classified_class, var_reg = model(target_embs[:, :-1, :], seq_syntax[:, :-1], in_embs, sent_pad_mask) # get_discrete_output(in_embs, model, target_tokens.shape[1])
+    
+    target_tokens[target_tokens == -1] = 0
+
+    outs = model(target_embs[:, :-1, :], seq_syntax[:, :-1], in_embs, sent_pad_mask) # get_discrete_output(in_embs, model, target_tokens.shape[1])
+    if len(outs) == 3:
+        out, classified_class, var_reg = outs
+    else: 
+        out, classified_class = outs
+        var_reg = None
     target = target_embs[:, 1:, :]
     lambda_index_mask, app_index_mask, var_index_mask_no, stop_mask, pad_mask = (lambda_index_mask[:, 1:], app_index_mask[:, 1:], var_index_mask_no[:, 1:], stop_mask[:, 1:], pad_mask[:, 1:])
-
     #classiifer truth
     gt_cls_mask = var_index_mask_no.type(torch.bool) + 2*lambda_index_mask.type(torch.bool) + 3*app_index_mask.type(torch.bool) #+ 4*stop_mask.type(torch.bool) #because lambda's class is 2
     loss = nn.functional.cross_entropy(classified_class.view(-1, 4), gt_cls_mask.view(-1), reduction="none")
     loss = ((loss) * (0.95 ** (torch.arange(loss.shape[0])).to(gt_cls_mask.device))).mean()# -- discounted loss
-    return bos, loss, target, classified_class, var_reg, gt_cls_mask, in_embs, in_tokens
 
-def model_inference(model, dataloader, max_len=200, last=False, beam_size=1):
+    return bos, loss, target, classified_class, var_reg, gt_cls_mask, in_embs, in_tokens, true_tokens
+
+def model_inference(model, dataloader, max_len=200, last=False, beam_size=1, split="train"):
     global DEVICE
     model.to(DEVICE)
     model.eval()
@@ -96,12 +141,13 @@ def model_inference(model, dataloader, max_len=200, last=False, beam_size=1):
     count = 0
     outs = []
 
+    for_dist_out = []
+
     prs, ps = [], []
     with torch.no_grad():
-        pbar = tqdm.tqdm(total=len(dataloader))
+        pbar = tqdm.tqdm(total=min(100000, len(dataloader)))
         for k, batch in enumerate(dataloader):
-            bos, loss, out, classified_class, var_reg, gt_cls_mask, in_embs, in_tokens = teacher_forcing(model, batch)
-
+            bos, loss, out, classified_class, var_reg, gt_cls_mask, in_embs, in_tokens, true_tokens = teacher_forcing(model, batch)
             average_loss += loss.item()
             count += 1
             pbar.set_description(f"Loss: {loss.item()/count}")
@@ -109,14 +155,17 @@ def model_inference(model, dataloader, max_len=200, last=False, beam_size=1):
 
             # #probability of true sequence:
             pr = torch.nn.Softmax(dim=-1)(classified_class)
-            pr = torch.gather(pr, -1, pr.argmax(-1,keepdim=True)).squeeze(-1) # teacher-forcing prob -- for true replace with gt_cls_mask
+            # pr = torch.gather(pr, -1, pr.argmax(-1,keepdim=True)).squeeze(-1) # teacher-forcing prob -- for true replace with gt_cls_mask
+            pr = torch.gather(pr, -1, gt_cls_mask.unsqueeze(-1)).squeeze(-1) 
             
             #Write the written outputs:
-            outs.append([list(zip(gt_cls_mask.squeeze(0).tolist(), pr.squeeze(0).tolist())), get_out_list(out[0], classified_class[0], var_reg[0], in_embs[0], in_tokens[0]), pr.prod(dim=-1).squeeze(0).item()])
+            outs.append([list(zip(gt_cls_mask.squeeze(0).tolist(), pr.squeeze(0).tolist())), get_out_list(out[0], classified_class[0], var_reg[0] if var_reg is not None else None, in_embs[0], in_tokens[0]), pr.prod(dim=-1).squeeze(0).item()])
             out_inf, classified_class_inf, var_reg_inf, probs_inf = model(in_embs, in_tokens, max_len=max_len, last=last, beam_size=beam_size, bos=bos, reference_target=out)
 
             if beam_size <= 1: 
-                outs.append([list(zip(classified_class_inf.argmax(-1).squeeze(0).tolist(), classified_class_inf.max(dim=-1)[0].squeeze(0).tolist())), get_out_list(out_inf[0], classified_class_inf[0], var_reg_inf[0], in_embs[0], in_tokens[0]), probs_inf.prod().item()])
+                got_seq = get_out_list(out_inf[0], classified_class_inf[0], var_reg_inf[0] if var_reg_inf is not None else None, in_embs[0], in_tokens[0])
+                outs.append([list(zip(classified_class_inf.argmax(-1).squeeze(0).tolist(), classified_class_inf.max(dim=-1)[0].squeeze(0).tolist())), got_seq, probs_inf.prod().item()])
+                for_dist_out.append([" ".join(true_tokens), got_seq])
                 p = probs_inf.prod().item()
             else:
                 p = -1
@@ -124,19 +173,25 @@ def model_inference(model, dataloader, max_len=200, last=False, beam_size=1):
                     total_prob = probs_inf[jkl].prod().item()
                     if total_prob > p:
                         p = total_prob
-                    outs.append([list(zip(classified_class_inf[jkl].tolist(), probs_inf[jkl].tolist())), get_out_list(out_inf[jkl], classified_class_inf[jkl], var_reg_inf[jkl], in_embs[0], in_tokens[0]), total_prob])
+                    outs.append([list(zip(classified_class_inf[jkl].tolist(), probs_inf[jkl].tolist())), get_out_list(out_inf[jkl], classified_class_inf[jkl], var_reg_inf[jkl] if var_reg_inf is not None else None, in_embs[0], in_tokens[0]), total_prob])
                 outs.append(["", "", ""]) # emmpty divider
 
             prs.append(pr)
             ps.append(p)
-            if k>1: break
+            if k>100000: break
+
     # #write
     loss = average_loss / count
     print("Average Loss: ", loss)
 
-    csv_file = open("outputs_gahhhh.csv", "w")
+    # csv_file = open(f"{split}_outputs_gahhhh.csv", "w")
+    # csv_writer = csv.writer(csv_file)
+    # csv_writer.writerows(outs)
+    # csv_file.close()
+
+    csv_file = open(f"outputs/{split}_all_lev_latest.csv", "a")
     csv_writer = csv.writer(csv_file)
-    csv_writer.writerows(outs)
+    csv_writer.writerows(for_dist_out)
     csv_file.close()
 
     # plot_teacher_forcing_error(prs, ps, save_as="teaching_forcing_not_last.png")
@@ -176,6 +231,8 @@ if __name__ == "__main__":
     train_dataloader, valid_dataloader, test_dataloader = dataloader.data_init(1, last=args.last, inference=True)
     
     model_inference(model, train_dataloader, max_len=200, last=args.last, beam_size=args.beam_size)
+    model_inference(model, valid_dataloader, max_len=200, last=args.last, beam_size=args.beam_size, split="valid")
+    model_inference(model, test_dataloader, max_len=200, last=args.last, beam_size=args.beam_size, split="test")
 
     # # model = ShuffledTransformerStack.load_from_checkpoint(args.model_path, model).model
     # DEVICE = torch.device("cpu") if args.cpu else torch.device("cuda")
@@ -227,3 +284,5 @@ if __name__ == "__main__":
     #         out_file.flush()
     #         os.fsync(out_file)
     #         write_lines = []    
+
+#command:  python inference.py --model_path models/train_r3_varrg.ckpt --last --custom
