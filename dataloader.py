@@ -632,7 +632,8 @@ SEP_TOKEN = [[[ 1.3052e+00, -8.8454e-01,  3.9420e+00,  2.9212e+00, -7.4760e-01,
          2.0106e+00, -1.2382e-01,  4.3564e+00, -2.5311e-01, -2.0908e+00,
         -4.8612e+00,  1.5140e+00, -1.6781e-02, -6.7198e-01,  1.0206e+00,
          2.0673e-02,  4.3746e+00,  1.7054e+00]]]
-    
+
+SPEC_SENTENCE_INDICES = [8076, 8345, 18879, 18884, 23207, 23358, 23359, 62121, 62224, 70190, 85396, 85398, 85409, 85436, 91424, 91426, 107889, 126868, 126918, 129526, 132621, 132626]    
 class ShuffledLambdaTermsDataset(Dataset):
     def __init__(self, input_sentences_file, main_dir, transform=None, target_transform=None, last=False, inference=False):
         self.main_dir = main_dir
@@ -733,14 +734,23 @@ def seed_worker(worker_id):
     numpy.random.seed(worker_seed)
     random.seed(worker_seed)
 
-def data_init(batch_size, last=False, inference=False):
+def data_init(batch_size, last=False, inference=False, rem_spec_sentences=False, data_path=DATA_PATH):
     #load in the tokenizer
     # tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
-    dataset = ShuffledLambdaTermsDataset(DATA_PATH + 'input_sentences.csv', DATA_PATH + 'lambda_terms/', last=last, inference=inference)
+    data_path = data_path if data_path != "" else DATA_PATH 
+    dataset = ShuffledLambdaTermsDataset(data_path + 'input_sentences.csv', data_path + 'lambda_terms/', last=last, inference=inference)
     #split the datset 70 20 10 split
+
+    if rem_spec_sentences:
+        dataset = Subset(dataset, [i for i in range(len(dataset)) if i not in SPEC_SENTENCE_INDICES])
 
     f = open(DATA_PATH+"dataset_splits.pkl", "rb")
     train_indices, val_indices, test_indices = pickle.load(f)
+
+    if rem_spec_sentences:
+        train_indices = [i for i in train_indices if i not in SPEC_SENTENCE_INDICES]
+        val_indices = [i for i in val_indices if i not in SPEC_SENTENCE_INDICES]
+        test_indices = [i for i in test_indices if i not in SPEC_SENTENCE_INDICES]
 
     gen = torch.Generator()
     gen.manual_seed(0)
