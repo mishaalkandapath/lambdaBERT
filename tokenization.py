@@ -8,16 +8,16 @@ import seaborn as sns
 from parsing import *
 
 # TOKENIZER = BertTokenizerFast.from_pretrained("bert-base-multilingual-cased") #
-# TOKENIZER = BertTokenizerFast.from_pretrained("bert-base-uncased")
-TOKENIZER = AutoTokenizer.from_pretrained("FacebookAI/xlm-roberta-base")
-BERT_MODEL = XLMRobertaModel.from_pretrained("FacebookAI/xlm-roberta-base")
+TOKENIZER = BertTokenizerFast.from_pretrained("bert-base-uncased")
+# TOKENIZER = AutoTokenizer.from_pretrained("FacebookAI/xlm-roberta-base")
+# BERT_MODEL = XLMRobertaModel.from_pretrained("FacebookAI/xlm-roberta-base")
 # BERT_MODEL = BertModel.from_pretrained("bert-base-multilingual-cased", output_hidden_states=True)
-# BERT_MODEL = BertModel.from_pretrained("bert-base-uncased", output_hidden_states=True)
+BERT_MODEL = BertModel.from_pretrained("bert-base-uncased", output_hidden_states=True)
 
 # BIG_VAR_EMBS = -torch.ones((2000, 768)) * (torch.tensor(range(1, 2001)))[:, None]
 
-STORE_PATH = "/w/150/lambda_squaddd/"
-# STORE_PATH = "/w/nobackup/436/lambda/"
+# STORE_PATH = "/w/150/lambda_squaddd/"
+STORE_PATH = "/w/nobackup/436/lambda/simplestlambda/"
 
 LAMBDA = [-2.6304e+00,  5.8553e-01,  4.2383e+00, -3.4630e+00, -5.1004e+00,
          6.3341e-01, -2.0096e+00,  1.1209e+00, -2.3989e-01,  1.1458e-01,
@@ -1038,7 +1038,7 @@ if __name__ == "__main__":
     import os
     from tqdm import tqdm
     import matplotlib.pyplot as plt
-    df = pd.read_csv("lambdaBERT/data/input_sentences.csv", header=None)
+    df = pd.read_csv("data/input_sentences.csv", header=None)
     sentences = len(df)     
 
     bad_sentences = []
@@ -1079,19 +1079,24 @@ if __name__ == "__main__":
         # lambda_terms = lambda_terms[0].strip()
 
         lambda_terms = lambda_terms.replace(")", "")
-        # try:
-        sent_emb, sent_emb_last, target_emb, target_emb_last, target_tokens, var_mask, lambda_mask, app_mask = create_out_tensor(gen_sent, lambda_terms)
-        # except Exception as e:
-        #     exceptions.append(e)
-        #     bad_sentences.append(i)
-        #     continue
+        try:
+            (sent_emb, sent_emb_last, 
+                target_emb, target_emb_last, target_tokens, 
+                var_mask, lambda_mask, app_mask) = create_out_tensor(
+                    gen_sent, 
+                    lambda_terms
+            )
+        except Exception as e:
+            exceptions.append(e)
+            bad_sentences.append(i)
+            continue
         # print(" ".join(convert_lambda_tokens(TOKENIZER.convert_ids_to_tokens([101 if t<0 else t for t in target_tokens]), lambda_mask, var_mask, app_mask)))
 
         if os.path.exists(f"{STORE_PATH + df.iloc[i, 2][:-4]}.pt"): 
             #delete it
             os.remove(f"{STORE_PATH + df.iloc[i, 2][:-4]}.pt")
-        # elif not os.path.exists(f"{STORE_PATH + '/'.join(df.iloc[i, 2][:-4].split('/')[:-1])}"):
-        #     os.makedirs(f"{STORE_PATH + '/'.join(df.iloc[i, 2][:-4].split('/')[:-1])}")
+        elif not os.path.exists(f"{STORE_PATH + '/'.join(df.iloc[i, 2][:-4].split('/')[:-1])}"):
+            os.makedirs(f"{STORE_PATH + '/'.join(df.iloc[i, 2][:-4].split('/')[:-1])}")
 
 
         # path = df.iloc[i, 2]
@@ -1110,7 +1115,7 @@ if __name__ == "__main__":
     print(f"Bad sentences: {len(bad_sentences)}")
     print(bad_sentences)
     #write exceptiosn to file
-    with open("exceptions.txt", "w") as f:
+    with open(f"{STORE_PATH}/exceptions.txt", "w") as f:
         for e in exceptions:
             f.write(str(e) + "\n")
    
@@ -1141,7 +1146,11 @@ if __name__ == "__main__":
 # bad sentences for bert base ucnased: 
 # [8076, 8345, 18879, 18884, 23207, 23358, 23359, 62121, 62224, 70190, 85396, 85398, 85409, 85436, 91424, 91426, 107889, 126868, 126918, 129526, 132621, 132626]
 
+#bad sentences for something idk anymore
+#[8076, 8345, 18879, 18884, 23207, 23358, 23359, 62121, 62224, 70190, 85396, 85398, 85409, 85436, 91424, 91426, 107889, 126868, 126918, 129526, 132621, 132626]
 
+# bad sentences for simplest lambda term
+# [8076, 8345, 18879, 18884, 23207, 23358, 23359, 62121, 62224, 70190, 85396, 85398, 85409, 85436, 91424, 91426, 107889, 126868, 126918, 129526]
         
         
         
