@@ -212,6 +212,8 @@ if __name__ == "__main__":
     parser.add_argument("--last", action="store_true")
     parser.add_argument("--custom", action="store_true")
     parser.add_argument("--beam_size", type=int, default=1)
+    parser.add_argument("--data_path", default="")
+    parser.add_argument("--name", default="")
 
     args = parser.parse_args()
 
@@ -228,11 +230,11 @@ if __name__ == "__main__":
     model.load_state_dict(model_weights)
 
     model = InferenceModel(model)
-    train_dataloader, valid_dataloader, test_dataloader = dataloader.data_init(1, last=args.last, inference=True)
+    train_dataloader, valid_dataloader, test_dataloader = dataloader.data_init(1, last=args.last, inference=True, data_path=args.data_path)
     
-    model_inference(model, train_dataloader, max_len=200, last=args.last, beam_size=args.beam_size)
-    model_inference(model, valid_dataloader, max_len=200, last=args.last, beam_size=args.beam_size, split="valid")
-    model_inference(model, test_dataloader, max_len=200, last=args.last, beam_size=args.beam_size, split="test")
+    model_inference(model, train_dataloader, max_len=200, last=args.last, beam_size=args.beam_size, split=f"{args.name}_train")
+    model_inference(model, valid_dataloader, max_len=200, last=args.last, beam_size=args.beam_size, split=f"{args.name}_valid")
+    model_inference(model, test_dataloader, max_len=200, last=args.last, beam_size=args.beam_size, split=f"{args.name}_test")
 
     # # model = ShuffledTransformerStack.load_from_checkpoint(args.model_path, model).model
     # DEVICE = torch.device("cpu") if args.cpu else torch.device("cuda")

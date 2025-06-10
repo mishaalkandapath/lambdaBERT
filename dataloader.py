@@ -14,7 +14,7 @@ import traceback, pickle
 # path to the file that stores all its lambda terms
 
 
-DATA_PATH = "/home/mishaalk/projects/def-gpenn/mishaalk/lambdaBERT/data/"
+DATA_PATH = "/w/150/lambda_squad/lambdaBERT/data/"
 BOS_TOKEN_LAST = [[[ 6.6404e-03,  1.2032e-01, -2.5759e-02,  1.1922e-01,  1.6584e-01,
         -2.4184e-02,  4.3246e-02, -9.4100e-02,  4.8467e-02,  1.7669e-01,
         -7.7217e-02, -2.4837e-02, -1.4056e-01,  1.7926e-01, -6.4828e-01,
@@ -633,7 +633,7 @@ SEP_TOKEN = [[[ 1.3052e+00, -8.8454e-01,  3.9420e+00,  2.9212e+00, -7.4760e-01,
         -4.8612e+00,  1.5140e+00, -1.6781e-02, -6.7198e-01,  1.0206e+00,
          2.0673e-02,  4.3746e+00,  1.7054e+00]]]
 
-SPEC_SENTENCE_INDICES = [8076, 8345, 18879, 18884, 23207, 23358, 23359, 62121, 62224, 70190, 85396, 85398, 85409, 85436, 91424, 91426, 107889, 126868, 126918, 129526, 132621, 132626]    
+SPEC_SENTENCE_INDICES = [8076, 132621, 62224, 132626, 85396, 126868, 85398, 8345, 91424, 85409, 91426, 23207, 62121, 70190, 85436, 23358, 23359, 18879, 18884, 126918, 107889, 129526]
 class ShuffledLambdaTermsDataset(Dataset):
     def __init__(self, input_sentences_file, main_dir, transform=None, target_transform=None, last=False, inference=False):
         self.main_dir = main_dir
