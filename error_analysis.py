@@ -271,7 +271,7 @@ def mean_probability_measures(true_probs, inference_probs, title="Evolution of V
     plt.savefig(save_as)
 
 # plot confusion matrix
-def plot_confusion_matrix(confusion_matrix, split="train"):
+def plot_confusion_matrix(confusion_matrix, split="train", plot_name="train"):
     # Label mapping
     label_map = {
         0: "Word",
@@ -311,7 +311,7 @@ def plot_confusion_matrix(confusion_matrix, split="train"):
     plt.tight_layout()
     
     # Save and clear
-    plt.savefig(f"confusion_matrix_{split}.png", dpi=300, bbox_inches='tight')
+    plt.savefig(f"confusion_matrix_{plot_name}.png", dpi=300, bbox_inches='tight')
     plt.clf()
 
 def easy_free_variable_counts(input_sents, model):
@@ -714,6 +714,8 @@ if __name__ == "__main__":
     l1_parser.add_argument("--last", action="store_true")
     l1_parser.add_argument("--custom", action="store_true")
     l1_parser.add_argument("--cpu", action="store_true")
+    l1_parser.add_argument("--name", default="train")
+    l1_parser.add_argument("--data_path", default="")
 
     args = l1_parser.parse_args()
 
@@ -733,18 +735,18 @@ if __name__ == "__main__":
         model = model.to(DEVICE)
 
         # --LOAD DATA
-        dataloader, valid_dataloader, test_dataloader = dataloader.data_init(1, last=args.last, inference=True)
+        dataloader, valid_dataloader, test_dataloader = dataloader.data_init(1, last=args.last, inference=True, data_path=args.data_path)
 
 
         #-- CONFUSION MATRIX --
         confusion_matrix = compute_confusion_matrix(model, dataloader)
-        plot_confusion_matrix(confusion_matrix, "test")
+        plot_confusion_matrix(confusion_matrix, "test", plot_name=args.name+"_train")
 
         confusion_matrix = compute_confusion_matrix(model, valid_dataloader)
-        plot_confusion_matrix(confusion_matrix, "valid")
+        plot_confusion_matrix(confusion_matrix, "valid", plot_name=args.name+"_valid")
 
         confusion_matrix = compute_confusion_matrix(model, test_dataloader)
-        plot_confusion_matrix(confusion_matrix)
+        plot_confusion_matrix(confusion_matrix, plot_name=args.name+"_test")
     elif args.levenshtein:
     
         #open csv file
