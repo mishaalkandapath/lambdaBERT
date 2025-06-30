@@ -742,19 +742,14 @@ def data_init(batch_size, last=False, inference=False, rem_spec_sentences=False,
     dataset = ShuffledLambdaTermsDataset(data_path + 'input_sentences.csv', data_path + 'lambda_terms/', last=last, inference=inference)
     #split the datset 70 20 10 split
 
-    if rem_spec_sentences:
-        dataset = Subset(dataset, [i for i in range(len(dataset)) if i not in SPEC_SENTENCE_INDICES])
-
-    f = open(DATA_PATH+"dataset_splits.pkl", "rb")
-    train_indices, val_indices, test_indices = pickle.load(f)
+    with open(DATA_PATH+"dataset_splits.pkl", "rb") as f:
+        train_indices, val_indices, test_indices = pickle.load(f)
 
     if rem_spec_sentences:
+        # Filter out special sentences from each split
         train_indices = [i for i in train_indices if i not in SPEC_SENTENCE_INDICES]
         val_indices = [i for i in val_indices if i not in SPEC_SENTENCE_INDICES]
         test_indices = [i for i in test_indices if i not in SPEC_SENTENCE_INDICES]
-
-    gen = torch.Generator()
-    gen.manual_seed(0)
     
     train_dataset, val_dataset, test_dataset = Subset(dataset, train_indices), Subset(dataset, val_indices), Subset(dataset, test_indices)
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=12, collate_fn=shuffled_collate)

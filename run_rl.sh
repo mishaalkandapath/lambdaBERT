@@ -17,12 +17,16 @@ if [ $# -eq 0 ]; then
 fi
 
 ./compute_can_setup.sh $1
+cd $SLURM_TMPDIR
 module purge 
 module load opencv cuda gcc scipy-stack 
-source ~/py10/bin/activate
+source env/bin/activate
+
+#move code
+cp /home/mishaalk/projects/def-gpenn/mishaalk/lambdaBERT/*.py .
 
 #python models.py --discrete --model_path /home/mishaalk/projects/def-gpenn/mishaalk/lambdaBERT/lambdabertmodel_linear_last/best_linear_last.ckpt --save_dir /home/mishaalk/projects/def-gpenn/mishaalk/lambdaBERT/discrete_linear_last/ --batch_size 20 --finetune_discrete #--model_is_discrete #--bert_is_last
-python models.py --save_dir "/home/mishaalk/projects/def-gpenn/mishaalk/lambdaBERT/linear_last_var_reg/" --model_path "/home/mishaalk/projects/def-gpenn/mishaalk/lambdaBERT/linear_last_var_reg/train_r6_1_varrg.ckpt" --batch_size 150 --bert_is_last --custom_transformer
+python models.py --save_dir "/home/mishaalk/projects/def-gpenn/mishaalk/lambdaBERT/bert_base_model/" --batch_size 150 --bert_is_last --custom_transformer --rem_spec_sentences
 # python models.py --save_dir "/home/mishaalk/projects/def-gpenn/mishaalk/lambdaBERT/linear_last/" --model_path /home/mishaalk/projects/def-gpenn/mishaalk/lambdaBERT/linear_last/train_r1_lin_last.ckpt --batch_size 20 --bert_is_last #--custom_transformer
 # python models.py --shuffled_mode --t_force --save_dir "/home/mishaalk/scratch/lambdaModelsNoTforce/" --batch_size 30
 # python models.py --shuffled_mode --save_dir "/home/mishaalk/scratch/lambdaPosModel/" --model_path /home/mishaalk/scratch/bestpost.ckpt
