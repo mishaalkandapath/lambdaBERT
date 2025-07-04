@@ -302,7 +302,6 @@ if __name__ == "__main__":
     parser.add_argument("--bert_is_last", action="store_true")
     parser.add_argument("--rem_spec_sentences", action="store_true")
     parser.add_argument("--data_path", default="") # can also be base
-    parser.add_argument("--model_type", default="base")
 
 
     args = parser.parse_args()
@@ -314,7 +313,7 @@ if __name__ == "__main__":
          custom_t=args.custom_transformer,
          bert_is_last=args.bert_is_last, 
          rem_spec_sentences=args.rem_spec_sentences, 
-         data_path=args.data_path, model_type=args.model_type)
+         data_path=args.data_path)
 
 
     # model = TransformerDecoderStack(6, 384, 12, 3072)

@@ -1,9 +1,10 @@
 import matplotlib.pyplot as plt
+import os
 from models import *
 import dataloader
 import tqdm, csv, random, pandas as pd
-from tokenization import get_bert_emb, TOKENIZER, LAMBDA, LAMBDA_LAST, OPEN_RRB, OPEN_RRB_LAST, BERT_MODEL, make_var_emb
-from dataloader import SEP_TOKEN, BOS_TOKEN, BOS_TOKEN_LAST
+from tokenization import LAMBDA, LAMBDA_LAST, OPEN_RRB, OPEN_RRB_LAST, make_var_emb
+from dataloader import BOS_TOKEN, BOS_TOKEN_LAST
 
 import torch 
 import torch.nn as nn
@@ -61,7 +62,7 @@ class InferenceModel(nn.Module):
         if beam_size > 1: 
             return self.beam_search_inference(in_embs, in_tokens, max_len=max_len, beam_size=beam_size, last=last, bos=bos)
         prs = []
-        x = torch.tensor(BOS_TOKEN if not last else BOS_TOKEN_LAST).to(in_embs.device) if bos is None else bos
+        x = torch.tensor(BOS_TOKEN[os.environ["BERT_TYPE"]] if not last else BOS_TOKEN_LAST[os.environ["BERT_TYPE"]]).to(in_embs.device) if bos is None else bos
         out_stacked, classified_class_stacked, classified_class_stacked_unfiltered, var_reg_stacked = x, torch.tensor([[0]]).long().to(in_embs.device), None, None
         best_index = None
         out_len = 0
@@ -84,10 +85,10 @@ class InferenceModel(nn.Module):
                 case 1:
                     to_append = ALL_VAR_EMBS[get_closest_var_idx(out[0, -1], var_count=torch.count_nonzero(classified_class_[0] == 1))].unsqueeze(0)  
                 case 2: 
-                    to_append = LAMBDA if not last else LAMBDA_LAST
+                    to_append = LAMBDA[os.environ["BERT_TYPE"]] if not last else LAMBDA_LAST[os.environ["BERT_TYPE"]]
                     to_append = torch.tensor(to_append).unsqueeze(0)
                 case 3:
-                    to_append = OPEN_RRB if not last else OPEN_RRB_LAST
+                    to_append = OPEN_RRB[os.environ["BERT_TYPE"]] if not last else OPEN_RRB_LAST[os.environ["BERT_TYPE"]]
                     to_append = torch.tensor(to_append).unsqueeze(0)
                 case _: 
                     print("UHHH this shudnt happen")
@@ -118,7 +119,7 @@ class InferenceModel(nn.Module):
 
     def beam_search_tokens(self, in_embs, in_tokens, max_len=20, beam_size=1, prejudice_tokens=None, bos=None):
         self.model.eval()
-        x = BOS_TOKEN_LAST if bos is not None else bos
+        x = BOS_TOKEN_LAST[os.environ["BERT_TYPE"]] if bos is not None else bos
         out_stacked, classified_class_stacked, classified_class_stacked_unfiltered, var_reg_stacked = x, torch.tensor([[0]]).long().to(x.device), None, None
         list_out = []
         cls_out = []
@@ -152,7 +153,7 @@ class InferenceModel(nn.Module):
 
     def beam_search_inference(self, in_embs, in_tokens, max_len=20, classify=True, beam_size=1, last=True, bos=None, reference=None): # TODO: make beam start from 5 -- number of classes
         self.model.eval()
-        x = x = torch.tensor(BOS_TOKEN if not last else BOS_TOKEN_LAST).to(in_embs.device) if bos is None else bos#torch.tensor(BOS_TOKEN_LAST).to(in_embs.device)
+        x = x = torch.tensor(BOS_TOKEN[os.environ["BERT_TYPE"]] if not last else BOS_TOKEN_LAST[os.environ["BERT_TYPE"]]).to(in_embs.device) if bos is None else bos#torch.tensor(BOS_TOKEN_LAST[os.environ["BERT_TYPE"]]).to(in_embs.device)
         out_stacked, classified_class_stacked, var_reg_stacked, newest_out = x, torch.tensor([[0]]).long().to(x.device) if classify else None, None, None
         list_out = []
         cls_out = []
@@ -223,9 +224,9 @@ class InferenceModel(nn.Module):
             out = out[b_indices]
 
             word_replaced = in_embs[0, get_closest_idx(out[:, -1], in_embs)]
-            if lambda_indices.tolist() != []: word_replaced[lambda_indices] = torch.tensor(LAMBDA_LAST if last else LAMBDA).unsqueeze(0).to(x.device)
+            if lambda_indices.tolist() != []: word_replaced[lambda_indices] = torch.tensor(LAMBDA_LAST[os.environ["BERT_TYPE"]] if last else LAMBDA[os.environ["BERT_TYPE"]]).unsqueeze(0).to(x.device)
             if app_indices.tolist() != []:  
-                word_replaced[app_indices] = torch.tensor(OPEN_RRB_LAST if last else OPEN_RRB).unsqueeze(0).to(x.device)
+                word_replaced[app_indices] = torch.tensor(OPEN_RRB_LAST[os.environ["BERT_TYPE"]] if last else OPEN_RRB[os.environ["BERT_TYPE"]]).unsqueeze(0).to(x.device)
             if var_indices.tolist() != []:  word_replaced[var_indices] = ALL_VAR_EMBS[get_closest_var_idx(out[:, -1])].to(x.device)
             
             if out_stacked.size(1) > 2:

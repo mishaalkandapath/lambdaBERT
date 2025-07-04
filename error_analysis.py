@@ -317,7 +317,7 @@ def plot_confusion_matrix(confusion_matrix, split="train", plot_name="train"):
 def easy_free_variable_counts(input_sents, model):
     model.eval()
 
-    tokenized = TOKENIZER(input_sents, return_tensors="pt", padding=True)
+    tokenized = TOKENIZER[os.environ["BERT_TYPE"]](input_sents, return_tensors="pt", padding=True)
     input_embs = get_bert_emb(tokenized)
     input_embs = input_embs.to(DEVICE)
 

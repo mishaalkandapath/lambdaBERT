@@ -1,9 +1,9 @@
 import matplotlib.pyplot as plt
 from models import *
 import dataloader
-import tqdm, csv, random, pandas as pd
-from tokenization import get_bert_emb, TOKENIZER, LAMBDA, OPEN_RRB, BERT_MODEL
-from dataloader import SEP_TOKEN, BOS_TOKEN, BOS_TOKEN_LAST
+import tqdm, csv, pandas as pd
+from tokenization import TOKENIZER
+from dataloader import (BOS_TOKEN, BOS_TOKEN_LAST)
 from inference_model import InferenceModel, get_closest_idx, get_closest_var_idx
 
 import torch 
@@ -30,21 +30,20 @@ SPEC_TOKENS = {"multilingual_bert": {"lambda": 475, "app": 113},
                 "bert_base": {"lambda": 1165, "app": 1006}}
 
 def get_mapped_out_sequences(in_tokens, out_tokens, spec_tokens=False):
-    in_sentence = TOKENIZER.convert_ids_to_tokens(in_tokens)
-    out_sentence = TOKENIZER.convert_ids_to_tokens(out_tokens)
-    assert in_tokens == TOKENIZER.encode(" ".join(in_sentence)), f"{in_tokens} != {TOKENIZER.encode(' '.join(in_sentence), add_special_tokens=False)}"
+    in_sentence = TOKENIZER[os.environ["BERT_TYPE"]].convert_ids_to_tokens(in_tokens)
+    out_sentence = TOKENIZER[os.environ["BERT_TYPE"]].convert_ids_to_tokens(out_tokens)
+    assert in_tokens == TOKENIZER[os.environ["BERT_TYPE"]].encode(" ".join(in_sentence)), f"{in_tokens} != {TOKENIZER[os.environ["BERT_TYPE"]].encode(' '.join(in_sentence), add_special_tokens=False)}"
     if spec_tokens:
         in_sentence = in_sentence[1:-1]
         out_sentence = out_sentence[1:-1]
 
-    in_sentence_mapping = TOKENIZER(" ".join(in_sentence), return_offsets_mapping=True)
-    out_sentence_mapping = TOKENIZER(" ".join(out_sentence), return_offsets_mapping=True)
+    in_sentence_mapping = TOKENIZER[os.environ["BERT_TYPE"]](" ".join(in_sentence), return_offsets_mapping=True)
+    out_sentence_mapping = TOKENIZER[os.environ["BERT_TYPE"]](" ".join(out_sentence), return_offsets_mapping=True)
     pass
 
 def obtain_target_lambda_sequence(
     in_tokens, var_indices_no, 
-    lambda_indices, app_indices,
-    bert_type="bert_base"): # 1165, 1006 
+    lambda_indices, app_indices): # 1165, 1006 
     in_tokens[lambda_indices] = SPEC_TOKENS[bert_type]["lambda"]
     in_tokens[app_indices] = SPEC_TOKENS[bert_type]["app"]
     in_tokens[in_tokens == -1] = 0
@@ -54,17 +53,17 @@ def obtain_target_lambda_sequence(
     in_tokens = in_tokens.tolist()
     offset = 0
     for i in var_indices.tolist():
-        t = TOKENIZER.encode(f"x{var_indices_no[i]}", add_special_tokens=False)
+        t = TOKENIZER[os.environ["BERT_TYPE"]].encode(f"x{var_indices_no[i]}", add_special_tokens=False)
         in_tokens = in_tokens[:i+offset] + t + in_tokens[i+1+offset:]
         offset += len(t) - 1
     in_tokens = torch.tensor(in_tokens)
 
-    word_list = TOKENIZER.decode(in_tokens).split()
+    word_list = TOKENIZER[os.environ["BERT_TYPE"]].decode(in_tokens).split()
     return word_list[1:-1]
 
 def get_out_list(out, classified_class, var_reg,
                   in_embs, in_tokens, dynamic_vars=False,
-                    get_indices=False, bert_type="bert_base"):
+                    get_indices=False):
     out_list = []
     if len(classified_class.shape) > 1: classified_class = classified_class.argmax(dim=-1).squeeze(0)
     for i in range(out.size(0)):
@@ -103,24 +102,23 @@ def get_out_list(out, classified_class, var_reg,
         for i in var_indices:
             out_emb = out[i]
             var_idx = get_closest_var_idx(out_emb, var_count=i)
-            t = TOKENIZER.encode(f"specvar{var_idx}", add_special_tokens=False)
+            t = TOKENIZER[os.environ["BERT_TYPE"]].encode(f"specvar{var_idx}", add_special_tokens=False)
             out_list = out_list[:i+offset] + t + out_list[i+1+offset:]
             offset += len(t) - 1
             # out_list[i] = f"x{var_idx}"
-    out_list = TOKENIZER.decode(out_list) 
+    out_list = TOKENIZER[os.environ["BERT_TYPE"]].decode(out_list) 
     out_list = out_list.split()
     if get_indices:
         return " ".join(out_list), out_list
     return " ".join(out_list)
 
-def teacher_forcing(model, batch, bert_type="bert_base"):
+def teacher_forcing(model, batch):
     global BOS_TOKEN_LAST, BOS_TOKEN
     (in_tokens, in_embs, target_embs, target_tokens, var_index_mask_no, lambda_index_mask, app_index_mask, stop_mask, pad_mask, sent_pad_mask) = batch
     in_tokens, in_embs, target_embs, target_tokens, var_index_mask_no, lambda_index_mask, app_index_mask, stop_mask, pad_mask, sent_pad_mask = in_tokens.to(DEVICE), in_embs.to(DEVICE), target_embs.to(DEVICE), target_tokens.to(DEVICE), var_index_mask_no.to(DEVICE), lambda_index_mask.to(DEVICE), app_index_mask.to(DEVICE), stop_mask.to(DEVICE), pad_mask.to(DEVICE), sent_pad_mask.to(DEVICE)
 
     true_tokens = obtain_target_lambda_sequence(
-        target_tokens.squeeze(0), var_index_mask_no.squeeze(0), lambda_index_mask.squeeze(0), app_index_mask.squeeze(0),
-        bert_type=bert_type)
+        target_tokens.squeeze(0), var_index_mask_no.squeeze(0), lambda_index_mask.squeeze(0), app_index_mask.squeeze(0))
 
     bos = target_embs[0, 0, :].unsqueeze(0).unsqueeze(0)
     seq_syntax = var_index_mask_no.type(torch.bool) + 2*lambda_index_mask.type(torch.bool) + 3*app_index_mask.type(torch.bool) 
@@ -144,8 +142,7 @@ def teacher_forcing(model, batch, bert_type="bert_base"):
 
 def model_inference(model, dataloader, 
                     max_len=200, last=False, 
-                    beam_size=1, split="train",
-                    bert_type="bert_base"):
+                    beam_size=1, split="train"):
     global DEVICE
     model.to(DEVICE)
     model.eval()
@@ -160,7 +157,7 @@ def model_inference(model, dataloader,
     with torch.no_grad():
         pbar = tqdm.tqdm(total=min(100000, len(dataloader)))
         for k, batch in enumerate(dataloader):
-            bos, loss, out, classified_class, var_reg, gt_cls_mask, in_embs, in_tokens, true_tokens = teacher_forcing(model, batch, bert_type=bert_type)
+            bos, loss, out, classified_class, var_reg, gt_cls_mask, in_embs, in_tokens, true_tokens = teacher_forcing(model, batch)
             average_loss += loss.item()
             count += 1
             pbar.set_description(f"Loss: {loss.item()/count}")
@@ -172,11 +169,11 @@ def model_inference(model, dataloader,
             pr = torch.gather(pr, -1, gt_cls_mask.unsqueeze(-1)).squeeze(-1) 
             
             #Write the written outputs:
-            outs.append([list(zip(gt_cls_mask.squeeze(0).tolist(), pr.squeeze(0).tolist())), get_out_list(out[0], classified_class[0], var_reg[0] if var_reg is not None else None, in_embs[0], in_tokens[0],bert_type=bert_type), pr.prod(dim=-1).squeeze(0).item()])
+            outs.append([list(zip(gt_cls_mask.squeeze(0).tolist(), pr.squeeze(0).tolist())), get_out_list(out[0], classified_class[0], var_reg[0] if var_reg is not None else None, in_embs[0], in_tokens[0]), pr.prod(dim=-1).squeeze(0).item()])
             out_inf, classified_class_inf, var_reg_inf, probs_inf = model(in_embs, in_tokens, max_len=max_len, last=last, beam_size=beam_size, bos=bos, reference_target=out)
 
             if beam_size <= 1: 
-                got_seq = get_out_list(out_inf[0], classified_class_inf[0], var_reg_inf[0] if var_reg_inf is not None else None, in_embs[0], in_tokens[0], bert_type=bert_type)
+                got_seq = get_out_list(out_inf[0], classified_class_inf[0], var_reg_inf[0] if var_reg_inf is not None else None, in_embs[0], in_tokens[0])
                 outs.append([list(zip(classified_class_inf.argmax(-1).squeeze(0).tolist(), classified_class_inf.max(dim=-1)[0].squeeze(0).tolist())), got_seq, probs_inf.prod().item()])
                 for_dist_out.append([" ".join(true_tokens), got_seq])
                 p = probs_inf.prod().item()
@@ -186,7 +183,7 @@ def model_inference(model, dataloader,
                     total_prob = probs_inf[jkl].prod().item()
                     if total_prob > p:
                         p = total_prob
-                    outs.append([list(zip(classified_class_inf[jkl].tolist(), probs_inf[jkl].tolist())), get_out_list(out_inf[jkl], classified_class_inf[jkl], var_reg_inf[jkl] if var_reg_inf is not None else None, in_embs[0], in_tokens[0],bert_type=bert_type), total_prob])
+                    outs.append([list(zip(classified_class_inf[jkl].tolist(), probs_inf[jkl].tolist())), get_out_list(out_inf[jkl], classified_class_inf[jkl], var_reg_inf[jkl] if var_reg_inf is not None else None, in_embs[0], in_tokens[0]), total_prob])
                 outs.append(["", "", ""]) # emmpty divider
 
             prs.append(pr)
@@ -227,7 +224,6 @@ if __name__ == "__main__":
     parser.add_argument("--beam_size", type=int, default=1)
     parser.add_argument("--data_path", default="")
     parser.add_argument("--name", default="")
-    parser.add_argument("--bert_type", default="bert_base", type=str)
 
     args = parser.parse_args()
 
@@ -236,7 +232,7 @@ if __name__ == "__main__":
 
     DEVICE = torch.device("cpu") if args.cpu else torch.device("cuda")
 
-    assert args.bert_type in SPEC_TOKENS
+    assert os.environ["BERT_TYPE"] in SPEC_TOKENS
 
     #load model
     model = TransformerDecoderStack(4, 384, 8, 3072, custom=args.custom)
@@ -250,13 +246,13 @@ if __name__ == "__main__":
     
     model_inference(model, train_dataloader,
                     max_len=200, last=args.last,
-                    beam_size=args.beam_size, split=f"{args.name}_train", bert_type=args.bert_type)
+                    beam_size=args.beam_size, split=f"{args.name}_train")
     model_inference(model, valid_dataloader, max_len=200, 
                     last=args.last, beam_size=args.beam_size, 
-                    split=f"{args.name}_valid", bert_type=args.bert_type)
+                    split=f"{args.name}_valid")
     model_inference(model, test_dataloader, max_len=200,
                      last=args.last, beam_size=args.beam_size,
-                       split=f"{args.name}_test", bert_type="bert_base")
+                       split=f"{args.name}_test")
 
     # # model = ShuffledTransformerStack.load_from_checkpoint(args.model_path, model).model
     # DEVICE = torch.device("cpu") if args.cpu else torch.device("cuda")
