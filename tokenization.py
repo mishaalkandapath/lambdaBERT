@@ -17,7 +17,7 @@ BERT_MODEL_BASE = BertModel.from_pretrained("bert-base-uncased", output_hidden_s
 # BIG_VAR_EMBS = -torch.ones((2000, 768)) * (torch.tensor(range(1, 2001)))[:, None]
 
 # STORE_PATH = "/w/150/lambda_squaddd/"
-STORE_PATH = "/w/nobackup/436/lambda/bert_base/" #"/w/nobackup/436/lambda/simplestlambda/"
+STORE_PATH = "/w/nobackup/436/lambda/simplestlambda/"#"/w/nobackup/436/lambda/bert_base/" #
 
 LAMBDA_MULTILINGUAL = [-2.6304e+00,  5.8553e-01,  4.2383e+00, -3.4630e+00, -5.1004e+00,
          6.3341e-01, -2.0096e+00,  1.1209e+00, -2.3989e-01,  1.1458e-01,
@@ -1059,11 +1059,15 @@ if __name__ == "__main__":
     terms =[]
     var_counts = []
 
-    TOKENIZER = TOKENIZER_BASE
-    BERT_MODEL = BERT_MODEL_BASE
-
-
-    for i in tqdm(range(sentences)): # 132621, 132622+4
+    TOKENIZER = TOKENIZER_MULTILINGUAL#TOKENIZER_BASE
+    BERT_MODEL = BERT_MODEL_MULTILINGUAL
+    LAMBDA_LAST = LAMBDA_LAST_MULTILINGUAL
+    LAMBDA = LAMBDA_MULTILINGUAL
+    OPEN_RRB = OPEN_RRB_MULTILINGUAL
+    OPEN_RRB_LAST = OPEN_RRB_LAST_MULTILINGUAL
+    bads = 0
+    pbar = tqdm(range(sentences))
+    for i in pbar: # 132621, 132622+4
     # for i in indices:
     #40000+2902+930+5
      #erorr in 929, 
@@ -1076,20 +1080,20 @@ if __name__ == "__main__":
             lambda_terms = f.readlines()
 
         # choose the simplest lambda term 
-        # simplest_term, smallest_depth = None, 100000
-        # _, words = preprocess_sent(gen_sent)
-        # for term in lambda_terms:
-        #     term2 = make_lambda_term_list(words, term.strip())
-        #     term2 = [t for t in term2 if t != ")"]
-        #     tree = parse_lambda_term_1(term2)[0]
-        #     d = find_height_tree(tree)
-        #     if d < smallest_depth:
-        #         smallest_depth = d
-        #         simplest_term = term.strip()
-        # lambda_terms = simplest_term
+        simplest_term, smallest_depth = None, 100000
+        _, words = preprocess_sent(gen_sent)
+        for term in lambda_terms:
+            term2 = make_lambda_term_list(words, term.strip())
+            term2 = [t for t in term2 if t != ")"]
+            tree = parse_lambda_term_1(term2)[0]
+            d = find_height_tree(tree)
+            if d < smallest_depth:
+                smallest_depth = d
+                simplest_term = term.strip()
+        lambda_terms = simplest_term
 
         # or just choose the first:
-        lambda_terms = lambda_terms[0].strip()
+        # lambda_terms = lambda_terms[0].strip()
 
         lambda_terms = lambda_terms.replace(")", "")
         try:
@@ -1102,7 +1106,10 @@ if __name__ == "__main__":
         except Exception as e:
             exceptions.append(e)
             bad_sentences.append(i)
+            bads+=1
+            pbar.set_description(f"{bads} bads")
             continue
+
         # print(" ".join(convert_lambda_tokens(TOKENIZER.convert_ids_to_tokens([101 if t<0 else t for t in target_tokens]), lambda_mask, var_mask, app_mask)))
 
         if os.path.exists(f"{STORE_PATH + df.iloc[i, 2][:-4]}.pt"): 
@@ -1125,6 +1132,7 @@ if __name__ == "__main__":
             target_emb_last[var_index_mask_no_temp != 0] = var_emb[non_zero_values]
 
         torch.save((sent_emb, sent_emb_last, target_emb, target_emb_last, target_tokens, var_mask, lambda_mask, app_mask), f"{STORE_PATH+df.iloc[i, 2][:-4]}.pt")
+        pbar.update(1)
     print(f"Bad sentences: {len(bad_sentences)}")
     print(bad_sentences)
     #write exceptiosn to file
@@ -1165,8 +1173,5 @@ if __name__ == "__main__":
 # bad sentences for simplest lambda term
 # [8076, 8345, 18879, 18884, 23207, 23358, 23359, 62121, 62224, 70190, 85396, 85398, 85409, 85436, 91424, 91426, 107889, 126868, 126918, 129526]
         
-        
-        
-        
-        
-    
+# actual bad sentences for bert base
+# [8076, 8345, 18879, 18884, 23207, 23358, 23359, 62121, 62224, 70190, 85396, 85398, 85409, 85436, 91424, 91426, 107889, 126868, 126918, 129526]
