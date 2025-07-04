@@ -22,7 +22,6 @@ import argparse
 import copy, math
 import time
 
-from tokenization import TOKENIZER, BERT_MODEL
 from transformers import BertConfig, BertForMaskedLM
 
 SAVE_DIR = "/home/mishaalk/scratch/lmabdaModelNoTForce/"
@@ -303,15 +302,19 @@ if __name__ == "__main__":
     parser.add_argument("--bert_is_last", action="store_true")
     parser.add_argument("--rem_spec_sentences", action="store_true")
     parser.add_argument("--data_path", default="") # can also be base
+    parser.add_argument("--model_type", default="base")
 
 
     args = parser.parse_args()
     SAVE_DIR = args.save_dir
     torch.manual_seed(0)
     #assert (args.model_is_discrete and args.model_path) or (args.model_path) or not (args.model_is_discrete or args.model_path), "model path for discrete model to be provided"
-    main(load_chckpnt=args.model_path,
-          t_force=args.t_force, t_damp=args.t_damp, batch_size=args.batch_size, custom_t=args.custom_transformer,
-            bert_is_last=args.bert_is_last, rem_spec_sentences=args.rem_spec_sentences, data_path=args.data_path)
+    main(load_chckpnt=args.model_path, t_force=args.t_force,
+         t_damp=args.t_damp, batch_size=args.batch_size, 
+         custom_t=args.custom_transformer,
+         bert_is_last=args.bert_is_last, 
+         rem_spec_sentences=args.rem_spec_sentences, 
+         data_path=args.data_path, model_type=args.model_type)
 
 
     # model = TransformerDecoderStack(6, 384, 12, 3072)
