@@ -1,3 +1,4 @@
+import os
 import torch
 import torch.nn
 from torch.utils.data import Dataset, DataLoader, Subset
@@ -14,7 +15,7 @@ import traceback, pickle
 # path to the file that stores all its lambda terms
 
 
-DATA_PATH = "data/"
+DATA_PATH = "/"
 BOS_TOKEN_LAST_MULTILINGUAL = [[[ 6.6404e-03,  1.2032e-01, -2.5759e-02,  1.1922e-01,  1.6584e-01,
         -2.4184e-02,  4.3246e-02, -9.4100e-02,  4.8467e-02,  1.7669e-01,
         -7.7217e-02, -2.4837e-02, -1.4056e-01,  1.7926e-01, -6.4828e-01,
@@ -652,7 +653,9 @@ SEP_TOKEN = {"multilingual_bert": SEP_TOKEN_MULTILINGUAL,
 SEP_TOKEN_LAST = {"multilingual_bert": SEP_TOKEN_LAST_MULTILINGUAL, 
              "bert_base": SEP_TOKEN_LAST_BASE}
 
-SPEC_SENTENCE_INDICES = [8076, 132621, 62224, 132626, 85396, 126868, 85398, 8345, 91424, 85409, 91426, 23207, 62121, 70190, 85436, 23358, 23359, 18879, 18884, 126918, 107889, 129526]
+# SPEC_SENTENCE_INDICES = [8076, 132621, 62224, 132626, 85396, 126868, 85398, 8345, 91424, 85409, 91426, 23207, 62121, 70190, 85436, 23358, 23359, 18879, 18884, 126918, 107889, 129526]
+# SPEC_SENTENCE_INDICES = [8075, 8344, 18878, 18883, 23206, 23357, 23358, 62120, 62223, 70189, 85395, 85397, 85408, 85435, 91423, 91425, 107888, 126867, 126917, 129525]
+SPEC_SENTENCE_INDICES = [8075, 8076, 132621, 62223, 62224, 132626, 85395, 126867, 85397, 85396, 126868, 8344, 85398, 8345, 91423, 85408, 91425, 91424, 85409, 91426, 23206, 23207, 62120, 62121, 70189, 70190, 85435, 85436, 23357, 23358, 18878, 23359, 18879, 18883, 18884, 126917, 126918, 107888, 107889, 129525, 129526]
 class ShuffledLambdaTermsDataset(Dataset):
     def __init__(self, input_sentences_file, main_dir, transform=None, target_transform=None, last=False, inference=False):
         self.main_dir = main_dir
@@ -674,8 +677,9 @@ class ShuffledLambdaTermsDataset(Dataset):
             sent = sent.input_ids
 
         if type(path) is not str: path = path.name
-        path = DATA_PATH + path[len("lambdaBERT/data/"):]
-        with open(path, 'r') as f:
+        txtpath = "data/"+path[len("lambdaBERT/data/"):]
+        path = self.main_dir + path[len("lambdaBERT/data/"):]
+        with open(txtpath, 'r') as f:
             lambda_terms = f.readlines()[0].strip()
 
         # remove the ")" from the lambda_term:
@@ -697,8 +701,8 @@ class ShuffledLambdaTermsDataset(Dataset):
                 raise Exception
 
         #sep token for target embedding:
-        target_embs = torch.cat([torch.tensor(BOS_TOKEN).squeeze(0), target_embs, torch.tensor(SEP_TOKEN).squeeze(0)], dim=0)
-        target_embs_last = torch.cat([torch.tensor(BOS_TOKEN_LAST).squeeze(0), target_embs_last, torch.tensor(SEP_TOKEN_LAST).squeeze(0)], dim=0)
+        target_embs = torch.cat([torch.tensor(BOS_TOKEN[os.environ["BERT_TYPE"]]).squeeze(0), target_embs, torch.tensor(SEP_TOKEN[os.environ["BERT_TYPE"]]).squeeze(0)], dim=0)
+        target_embs_last = torch.cat([torch.tensor(BOS_TOKEN[os.environ["BERT_TYPE"]]).squeeze(0), target_embs_last, torch.tensor(SEP_TOKEN_LAST[os.environ["BERT_TYPE"]]).squeeze(0)], dim=0)
         target_tokens = [101] + target_tokens + [102]
         lambda_index_mask = [0] + lambda_index_mask + [0]
         var_index_mask_no = [0] + var_index_mask_no + [0]
@@ -758,10 +762,10 @@ def data_init(batch_size, last=False, inference=False, rem_spec_sentences=False,
     #load in the tokenizer
     # tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
     data_path = data_path if data_path != "" else DATA_PATH 
-    dataset = ShuffledLambdaTermsDataset(data_path + 'input_sentences.csv', data_path + 'lambda_terms/', last=last, inference=inference)
-    #split the datset 70 20 10 split
+    print("Data path is ", data_path)
+    dataset = ShuffledLambdaTermsDataset('data/input_sentences.csv', data_path, last=last, inference=inference)
 
-    with open(DATA_PATH+"dataset_splits.pkl", "rb") as f:
+    with open("data/dataset_splits.pkl", "rb") as f:
         train_indices, val_indices, test_indices = pickle.load(f)
 
     if rem_spec_sentences:

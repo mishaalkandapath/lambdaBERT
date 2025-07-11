@@ -1,3 +1,5 @@
+import os
+import pickle
 import matplotlib.pyplot as plt
 from models import *
 import dataloader
@@ -32,7 +34,7 @@ SPEC_TOKENS = {"multilingual_bert": {"lambda": 475, "app": 113},
 def get_mapped_out_sequences(in_tokens, out_tokens, spec_tokens=False):
     in_sentence = TOKENIZER[os.environ["BERT_TYPE"]].convert_ids_to_tokens(in_tokens)
     out_sentence = TOKENIZER[os.environ["BERT_TYPE"]].convert_ids_to_tokens(out_tokens)
-    assert in_tokens == TOKENIZER[os.environ["BERT_TYPE"]].encode(" ".join(in_sentence)), f"{in_tokens} != {TOKENIZER[os.environ["BERT_TYPE"]].encode(' '.join(in_sentence), add_special_tokens=False)}"
+    assert in_tokens == TOKENIZER[os.environ["BERT_TYPE"]].encode(" ".join(in_sentence)), f"{in_tokens} != {TOKENIZER[os.environ['BERT_TYPE']].encode(' '.join(in_sentence), add_special_tokens=False)}"
     if spec_tokens:
         in_sentence = in_sentence[1:-1]
         out_sentence = out_sentence[1:-1]
@@ -44,8 +46,8 @@ def get_mapped_out_sequences(in_tokens, out_tokens, spec_tokens=False):
 def obtain_target_lambda_sequence(
     in_tokens, var_indices_no, 
     lambda_indices, app_indices): # 1165, 1006 
-    in_tokens[lambda_indices] = SPEC_TOKENS[bert_type]["lambda"]
-    in_tokens[app_indices] = SPEC_TOKENS[bert_type]["app"]
+    in_tokens[lambda_indices] = SPEC_TOKENS[os.environ["BERT_TYPE"]]["lambda"]
+    in_tokens[app_indices] = SPEC_TOKENS[os.environ["BERT_TYPE"]]["app"]
     in_tokens[in_tokens == -1] = 0
 
     #mark the var_indices
@@ -79,10 +81,10 @@ def get_out_list(out, classified_class, var_reg,
     lambda_indices, app_indices, var_indices = torch.where(classified_class == 2)[0].tolist(), torch.where(classified_class == 3)[0].tolist(), torch.where(classified_class == 1)[0].tolist()
 
     for i in lambda_indices:
-        out_list[i] = SPEC_TOKENS[bert_type]["lambda"]#"λ"
+        out_list[i] = SPEC_TOKENS[os.environ["BERT_TYPE"]]["lambda"]#"λ"
 
     for i in app_indices:
-        out_list[i] = SPEC_TOKENS[bert_type]["app"]#"("
+        out_list[i] = SPEC_TOKENS[os.environ["BERT_TYPE"]]["app"]#"("
     
     # time for variables
     offset = 0
@@ -152,12 +154,18 @@ def model_inference(model, dataloader,
     outs = []
 
     for_dist_out = []
+    skips = []
 
     prs, ps = [], []
     with torch.no_grad():
         pbar = tqdm.tqdm(total=min(100000, len(dataloader)))
         for k, batch in enumerate(dataloader):
             bos, loss, out, classified_class, var_reg, gt_cls_mask, in_embs, in_tokens, true_tokens = teacher_forcing(model, batch)
+
+            if len(true_tokens) < 2: 
+                skips.append(k)
+                continue
+
             average_loss += loss.item()
             count += 1
             pbar.set_description(f"Loss: {loss.item()/count}")
@@ -204,6 +212,10 @@ def model_inference(model, dataloader,
     csv_writer.writerows(for_dist_out)
     csv_file.close()
 
+    skips_file = open(f"outputs/{split}_all_lev_skips.pkl", "wb")
+    pickle.dump(skips, skips_file)
+    skips_file.close()
+    print(skips)
     # plot_teacher_forcing_error(prs, ps, save_as="teaching_forcing_not_last.png")
     # mean_probability_measures(word_prs, word_ps, title="Evolution of Word Probabilities", save_as="word_time_notlast.png")
     # mean_probability_measures(var_prs, var_ps, title="Evolution of Var Probabilities", save_as="var_time_notlast.png")
@@ -233,6 +245,7 @@ if __name__ == "__main__":
     DEVICE = torch.device("cpu") if args.cpu else torch.device("cuda")
 
     assert os.environ["BERT_TYPE"] in SPEC_TOKENS
+    print("---Model type is ", os.environ["BERT_TYPE"])
 
     #load model
     model = TransformerDecoderStack(4, 384, 8, 3072, custom=args.custom)
@@ -242,14 +255,14 @@ if __name__ == "__main__":
     model.load_state_dict(model_weights)
 
     model = InferenceModel(model)
-    train_dataloader, valid_dataloader, test_dataloader = dataloader.data_init(1, last=args.last, inference=True, data_path=args.data_path)
+    train_dataloader, valid_dataloader, test_dataloader = dataloader.data_init(1, last=args.last, inference=True, data_path=args.data_path, rem_spec_sentences=True)
     
-    model_inference(model, train_dataloader,
-                    max_len=200, last=args.last,
-                    beam_size=args.beam_size, split=f"{args.name}_train")
-    model_inference(model, valid_dataloader, max_len=200, 
-                    last=args.last, beam_size=args.beam_size, 
-                    split=f"{args.name}_valid")
+    # model_inference(model, train_dataloader,
+    #                 max_len=200, last=args.last,
+    #                 beam_size=args.beam_size, split=f"{args.name}_train")
+    # model_inference(model, valid_dataloader, max_len=200, 
+    #                 last=args.last, beam_size=args.beam_size, 
+    #                 split=f"{args.name}_valid")
     model_inference(model, test_dataloader, max_len=200,
                      last=args.last, beam_size=args.beam_size,
                        split=f"{args.name}_test")

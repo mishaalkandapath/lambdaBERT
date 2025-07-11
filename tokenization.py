@@ -1,11 +1,11 @@
 from transformers import BertTokenizerFast, BertModel, AutoTokenizer, XLMRobertaModel
 import torch
-import re
+import re, os, shutil
 from collections import defaultdict
 import random
 import seaborn as sns
 
-from parsing import *
+from parsing import parse_lambda_term_1, make_lambda_term_list, find_height_tree, preprocess_sent
 
 TOKENIZER_MULTILINGUAL = BertTokenizerFast.from_pretrained("bert-base-multilingual-cased") #
 TOKENIZER_BASE = BertTokenizerFast.from_pretrained("bert-base-uncased")
@@ -22,7 +22,7 @@ BERT_MODEL = {"multilingual_bert": BERT_MODEL_MULTILINGUAL,
 # BIG_VAR_EMBS = -torch.ones((2000, 768)) * (torch.tensor(range(1, 2001)))[:, None]
 
 # STORE_PATH = "/w/150/lambda_squaddd/"
-STORE_PATH = "/w/nobackup/436/lambda/simplestlambda/"#"/w/nobackup/436/lambda/bert_base/" #
+STORE_PATH = "/w/nobackup/436/lambda/bert_base/" #"/w/nobackup/436/lambda/simplestlambda/"
 
 LAMBDA_MULTILINGUAL = [-2.6304e+00,  5.8553e-01,  4.2383e+00, -3.4630e+00, -5.1004e+00,
          6.3341e-01, -2.0096e+00,  1.1209e+00, -2.3989e-01,  1.1458e-01,
@@ -744,7 +744,7 @@ def process_bert_lambda(tokenized_sents, lambda_index_mask, app_index_mask, var_
     #     # var_index_mask_no = var_index_mask_no.to(torch.device('cpu'))
     #     embs = embs.index_put((var_index_mask_no != 0, ), BIG_VAR_EMBS[indices[indices != 0]], accumulate=True)
     if lambda_norm:
-        embs[lambda_index_mask] = torch.tensor(LAMBDA, device=embs.device, dtype=embs.dtype)#torch.ones((embs.shape[-1], ), device=embs.device, dtype=embs.dtype)
+        embs[lambda_index_mask] = torch.tensor(LAMBDA[os.environ["BERT_TYPE"]], device=embs.device, dtype=embs.dtype)#torch.ones((embs.shape[-1], ), device=embs.device, dtype=embs.dtype)
 
     return embs, lambda_index_mask, app_index_mask, var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask
 
@@ -796,21 +796,6 @@ def plot_variable_order_distribution(lambda_terms, save_as=""):
     plt.grid(True, alpha=0.3)
     
     plt.savefig(save_as)
-
-def preprocess_sent(sentence):
-    words = " ".join(sentence).replace("...}"," ...}").replace("{..","{. .").replace("NP.","NP .").replace("NP—","NP —").replace(",}"," ,}").\
-    replace("'re"," 're").replace("'s"," 's").replace("'ve}"," 've}").replace("!}"," !}").replace("?}"," ?}").replace("n't"," n't").\
-    replace("'m}"," 'm}").replace("{. ..","{...").replace("{——}","{— —}").replace("{--—}","{- -—}").replace("St.", "St").strip().split()
-    
-    words = [word[:-1].strip("\u200e") if word[-1] == "}" else word for i, word in enumerate(words) if i % 2 != 0] # -1 to get rid of the } at the end. sentences in PTB tokenized form with POS tagging - {Tag word}
-
-    for i, word in enumerate(words):
-        if "." in word and len(list(set(word))) != 1: words[i] = words[i].replace(".", "")
-        # tiny preprocessing change λ to µ 
-        if word == "λ": words[i] = "µ"
-
-    tokens = TOKENIZER[os.environ["BERT_TYPE"]](" ".join(words), add_special_tokens=True, return_tensors="pt", return_offsets_mapping=True)
-    return tokens, words
 
 
 def create_out_tensor(sentence, lambda_term):
@@ -963,16 +948,16 @@ def create_out_tensor(sentence, lambda_term):
     var_logs = []
     for i, element in enumerate(lambda_term_list):
         if element == "(" or element == ")":
-            lambda_term_embedding.append("loo" if element == ")" else torch.tensor(OPEN_RRB))
-            lambda_term_embedding_last.append("loo" if element == ")" else torch.tensor(OPEN_RRB_LAST))
+            lambda_term_embedding.append("loo" if element == ")" else torch.tensor(OPEN_RRB[os.environ["BERT_TYPE"]]))
+            lambda_term_embedding_last.append("loo" if element == ")" else torch.tensor(OPEN_RRB_LAST[os.environ["BERT_TYPE"]]))
             app_mask.append(1)
             lambda_mask.append(0)
             var_mask.append(0)
             lambda_term_tokens.append(-1)
             lambda_term_tokens_temp.append(113)
         elif lambda_pattern.match(element)is not None:
-            lambda_term_embedding.append(torch.tensor(LAMBDA))
-            lambda_term_embedding_last.append(torch.tensor(LAMBDA_LAST))
+            lambda_term_embedding.append(torch.tensor(LAMBDA[os.environ["BERT_TYPE"]]))
+            lambda_term_embedding_last.append(torch.tensor(LAMBDA_LAST[os.environ["BERT_TYPE"]]))
             var_mask.append(0)
             lambda_mask.append(1)
             app_mask.append(0)
@@ -1088,20 +1073,20 @@ if __name__ == "__main__":
             lambda_terms = f.readlines()
 
         # choose the simplest lambda term 
-        simplest_term, smallest_depth = None, 100000
-        _, words = preprocess_sent(gen_sent)
-        for term in lambda_terms:
-            term2 = make_lambda_term_list(words, term.strip())
-            term2 = [t for t in term2 if t != ")"]
-            tree = parse_lambda_term_1(term2)[0]
-            d = find_height_tree(tree)
-            if d < smallest_depth:
-                smallest_depth = d
-                simplest_term = term.strip()
-        lambda_terms = simplest_term
+        # simplest_term, smallest_depth = None, 100000
+        # _, words = preprocess_sent(gen_sent)
+        # for term in lambda_terms:
+        #     term2 = make_lambda_term_list(words, term.strip())
+        #     term2 = [t for t in term2 if t != ")"]
+        #     tree = parse_lambda_term_1(term2)[0]
+        #     d = find_height_tree(tree)
+        #     if d < smallest_depth:
+        #         smallest_depth = d
+        #         simplest_term = term.strip()
+        # lambda_terms = simplest_term
 
         # or just choose the first:
-        # lambda_terms = lambda_terms[0].strip()
+        lambda_terms = lambda_terms[0].strip()
 
         lambda_terms = lambda_terms.replace(")", "")
         try:
@@ -1140,6 +1125,7 @@ if __name__ == "__main__":
             target_emb_last[var_index_mask_no_temp != 0] = var_emb[non_zero_values]
 
         torch.save((sent_emb, sent_emb_last, target_emb, target_emb_last, target_tokens, var_mask, lambda_mask, app_mask), f"{STORE_PATH+df.iloc[i, 2][:-4]}.pt")
+        shutil.copy(path, f"{STORE_PATH+df.iloc[i, 2][:-4]}.txt")
         pbar.update(1)
     print(f"Bad sentences: {len(bad_sentences)}")
     print(bad_sentences)

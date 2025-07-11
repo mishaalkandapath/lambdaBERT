@@ -716,6 +716,7 @@ if __name__ == "__main__":
     l1_parser.add_argument("--cpu", action="store_true")
     l1_parser.add_argument("--name", default="train")
     l1_parser.add_argument("--data_path", default="")
+    l1_parser.add_argument("--rem_spec_indices", action="store_true")
 
     args = l1_parser.parse_args()
 
@@ -735,15 +736,15 @@ if __name__ == "__main__":
         model = model.to(DEVICE)
 
         # --LOAD DATA
-        dataloader, valid_dataloader, test_dataloader = dataloader.data_init(1, last=args.last, inference=True, data_path=args.data_path)
+        dataloader, valid_dataloader, test_dataloader = dataloader.data_init(1, last=args.last, inference=True, data_path=args.data_path, rem_spec_sentences=args.rem_spec_indices)
 
 
         #-- CONFUSION MATRIX --
-        confusion_matrix = compute_confusion_matrix(model, dataloader)
-        plot_confusion_matrix(confusion_matrix, "test", plot_name=args.name+"_train")
+        # confusion_matrix = compute_confusion_matrix(model, dataloader)
+        # plot_confusion_matrix(confusion_matrix, "test", plot_name=args.name+"_train")
 
-        confusion_matrix = compute_confusion_matrix(model, valid_dataloader)
-        plot_confusion_matrix(confusion_matrix, "valid", plot_name=args.name+"_valid")
+        # confusion_matrix = compute_confusion_matrix(model, valid_dataloader)
+        # plot_confusion_matrix(confusion_matrix, "valid", plot_name=args.name+"_valid")
 
         confusion_matrix = compute_confusion_matrix(model, test_dataloader)
         plot_confusion_matrix(confusion_matrix, plot_name=args.name+"_test")
@@ -759,6 +760,10 @@ if __name__ == "__main__":
             lev_scores_modified_normed = []
 
             lev_types = {"missing constant": 0, "extra constant": 0, "mismatched constant": 0, "constant -> lambda": 0, "constant -> app":0, "constant -> var":0, \
+                         "missing variable": 0, "extra variable": 0, "mismatched variable": 0, "variable -> lambda": 0, "variable -> app":0, "variable -> constant":0, \
+                            "missing lambda": 0, "extra lambda": 0, "lambda -> app":0, "lambda -> constant":0, "lambda -> var":0, \
+                                "missing application": 0, "extra application": 0, "application -> lambda":0, "application -> constant":0, "application -> var":0}
+            lev_types_all = {"missing constant": 0, "extra constant": 0, "mismatched constant": 0, "constant -> lambda": 0, "constant -> app":0, "constant -> var":0, \
                          "missing variable": 0, "extra variable": 0, "mismatched variable": 0, "variable -> lambda": 0, "variable -> app":0, "variable -> constant":0, \
                             "missing lambda": 0, "extra lambda": 0, "lambda -> app":0, "lambda -> constant":0, "lambda -> var":0, \
                                 "missing application": 0, "extra application": 0, "application -> lambda":0, "application -> constant":0, "application -> var":0}
@@ -818,6 +823,7 @@ if __name__ == "__main__":
                                 lev_types["constant -> var"] += 1
                             else:
                                 lev_types["mismatched constant"] += 1
+                
 
                 # print("True levenshtein distance: ", "Normalized true lev dist: ", )
                 # print("Modified levenhtein distance: ", "Normalized modified lev dist: ", )
@@ -875,7 +881,7 @@ if __name__ == "__main__":
 
         # Adjust layout and save
         plt.tight_layout(rect=[0, 0, 1, 0.96])  # Make room for the title
-        plt.savefig(f"{args.split}_lev.png", dpi=300)
+        plt.savefig(f"{args.name}_{args.split}_lev.png", dpi=300)
         plt.show()
 
         # Print bin information for each dataset
@@ -896,7 +902,7 @@ if __name__ == "__main__":
         print("Normalized Modified Levenshtein Distance: ", np.mean(lev_scores_modified_normed))
 
         #write great sentences
-        with open("great_sentence_pairs.csv", "w") as f:
+        with open(f"{args.name}_{args.split}_great_sentence_pairs.csv", "w") as f:
             writer = csv.writer(f)
             for row in great_sentence_pairs:
                 writer.writerow(row)
@@ -928,7 +934,7 @@ if __name__ == "__main__":
         plt.legend(title='Category', bbox_to_anchor=(1.05, 1), loc='upper left')
 
         # Show the plot
-        plt.savefig('levenshtein_types.png', dpi=300, bbox_inches='tight')
+        plt.savefig(f'{args.name}_{args.split}_levenshtein_types.png', dpi=300, bbox_inches='tight')
         plt.show()
 
         # Print the frequency for each type

@@ -1,11 +1,19 @@
 import re
-# from tokenization import preprocess_sent
+import os
 from tqdm import tqdm 
 import pandas as pd
 import pickle
 import matplotlib.pyplot as plt
 import seaborn as sns
 import traceback 
+
+from transformers import BertTokenizerFast, BertModel
+
+
+TOKENIZER_MULTILINGUAL = BertTokenizerFast.from_pretrained("bert-base-multilingual-cased") #
+TOKENIZER_BASE = BertTokenizerFast.from_pretrained("bert-base-uncased")
+TOKENIZER = {"multilingual_bert": TOKENIZER_MULTILINGUAL, 
+             "bert_base": TOKENIZER_BASE}
 
 class LambdaTerm:
     pass
@@ -64,6 +72,36 @@ def application(stack):
             func = Application(func, arg, applications=(func.applications if type(func) is not str else 0) + (arg.applications if type(arg) is not str else 0), abstractions=(func.abstractions if type(func) is not str else 0) + (arg.abstractions if type(arg) is not str else 0))
         stack.append(func)
     return stack
+
+def preprocess_sent(sentence):
+    words = " ".join(sentence).replace("...}"," ...}").replace("{..","{. .").replace("NP.","NP .").replace("NP—","NP —").replace(",}"," ,}").\
+    replace("'re"," 're").replace("'s"," 's").replace("'ve}"," 've}").replace("!}"," !}").replace("?}"," ?}").replace("n't"," n't").\
+    replace("'m}"," 'm}").replace("{. ..","{...").replace("{——}","{— —}").replace("{--—}","{- -—}").replace("St.", "St").strip().split()
+    
+    words = [word[:-1].strip("\u200e") if word[-1] == "}" else word for i, word in enumerate(words) if i % 2 != 0] # -1 to get rid of the } at the end. sentences in PTB tokenized form with POS tagging - {Tag word}
+
+    for i, word in enumerate(words):
+        if "." in word and len(list(set(word))) != 1: words[i] = words[i].replace(".", "")
+        # tiny preprocessing change λ to µ 
+        if word == "λ": words[i] = "µ"
+
+    tokens = TOKENIZER[os.environ["BERT_TYPE"]](" ".join(words), add_special_tokens=True, return_tensors="pt", return_offsets_mapping=True)
+    return tokens, words
+
+def preprocess_sent(sentence):
+    words = " ".join(sentence).replace("...}"," ...}").replace("{..","{. .").replace("NP.","NP .").replace("NP—","NP —").replace(",}"," ,}").\
+    replace("'re"," 're").replace("'s"," 's").replace("'ve}"," 've}").replace("!}"," !}").replace("?}"," ?}").replace("n't"," n't").\
+    replace("'m}"," 'm}").replace("{. ..","{...").replace("{——}","{— —}").replace("{--—}","{- -—}").replace("St.", "St").strip().split()
+    
+    words = [word[:-1].strip("\u200e") if word[-1] == "}" else word for i, word in enumerate(words) if i % 2 != 0] # -1 to get rid of the } at the end. sentences in PTB tokenized form with POS tagging - {Tag word}
+
+    for i, word in enumerate(words):
+        if "." in word and len(list(set(word))) != 1: words[i] = words[i].replace(".", "")
+        # tiny preprocessing change λ to µ 
+        if word == "λ": words[i] = "µ"
+
+    tokens = TOKENIZER[os.environ["BERT_TYPE"]](" ".join(words), add_special_tokens=True, return_tensors="pt", return_offsets_mapping=True)
+    return tokens, words
 
 def parse_lambda_term_1(term, return_offset=False):
     stack = []
@@ -210,149 +248,182 @@ def find_height_tree(tree):
         return 1 + max(find_height_tree(tree.function), find_height_tree(tree.argument))
     else:
         raise ValueError("Invalid tree structure")
+    
+def simplest(lambdas, gen_sent):
+    # choose the simplest lambda term 
+    simplest_term, smallest_depth = None, 100000
+    _, words = preprocess_sent(gen_sent)
+    for term in lambdas:
+        term2 = make_lambda_term_list(words, term.strip())
+        term2 = [t for t in term2 if t != ")"]
+        tree = parse_lambda_term_1(term2)[0]
+        d = find_height_tree(tree)
+        if d < smallest_depth:
+            smallest_depth = d
+            simplest_term = term.strip()
+    lambda_terms = simplest_term
+    return lambda_terms
 
 if __name__ == "__main__":
-
-    files = ["/w/150/lambda_squad/lambdaBERT/outputs/test_all_lev.csv"]#["/w/150/lambda_squad/lambdaBERT/outputs/train_all_lev.csv", "/w/150/lambda_squad/lambdaBERT/outputs/valid_all_lev.csv", "/w/150/lambda_squad/lambdaBERT/outputs/test_all_lev.csv"]
+    import argparse
+    import pickle
     
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--csv_file")
+    parser.add_argument('--skip_file')
+    parser.add_argument("--name")
+    parser.add_argument("--simplest", action="store_true")
+    parser.add_argument("--mode")
+    args = parser.parse_args()
+    
+    assert args.mode in ("app", "abs", "both")
+    name = args.name
     f = open("/w/150/lambda_squad/lambdaBERT/data/dataset_splits.pkl", "rb")
     data_split = pickle.load(f)
     f.close()
 
+    skip_file = open(args.skip_file, "rb")
+    skips = pickle.load(skip_file)
+    skip_file.close()
+
     main_df = pd.read_csv("/w/150/lambda_squad/lambdaBERT/data/input_sentences.csv", header=None, names=["sentence", "tags", "path"])
-    for t, file in enumerate(files):
         
-        split_numbers = data_split[t]
+    split = "test" if "test" in args.csv_file else ("valid" if "valid" in args.csv_file else "train")
+    _, _, split_numbers = data_split
 
-        split = file.split("/")[-1].split("_")[0]
-        df = pd.read_csv(file, header=None, names=["true_term", "inf_term"])
-        baddies = []
-        f_scores, precisions, recalls = [], [], []
-        forest_sizes = []
-        forests = []
+    df = pd.read_csv(args.csv_file, header=None, names=["true_term", "inf_term"])
+    baddies = []
+    f_scores, precisions, recalls = [], [], []
+    forest_sizes = []
+    forests = []
 
-        study_precisions = []
+    study_precisions = []
 
-        double_tree_terms = []
-        for i, row in tqdm(df.iterrows(), total=len(df)):
-            lambda_term_list = row["inf_term"].split()
-            # true_term_list = row["true_term"].split()
-            sent_index = split_numbers[i]
-            true_sentence = eval(main_df.iloc[sent_index].tags)
-            f1 = open("/".join(main_df.iloc[sent_index].path.split("/")[1:]))
-            true_term_list = f1.readlines()[0].strip()
-            f1.close()
-            
-            _, words = preprocess_sent(true_sentence)
-            true_term_list = make_lambda_term_list(words, true_term_list)
-            
-            try:
-                trees = parse_lambda_term(lambda_term_list)
-                forests.append(trees)
-                forest_sizes.append(len(trees))
-                if len(trees) == 2:
-                    double_tree_terms.append((" ".join(lambda_term_list), " ".join(words), " ".join(true_term_list)))
-                    
-            except:
-                baddies.append(i)
-                continue
-            try:
-                true_tree = parse_lambda_term(true_term_list)
-                assert len(true_tree) == 1, f"True tree is not a single tree: {true_tree}, {true_term_list}"
-                true_tree = true_tree[0]
-            except Exception as e:
-                print(e)
-                print(traceback.format_exc())
-                raise Exception("This should not have happened. Lamda term is ", true_term_list)
-            
-            x = fake_eval(true_tree, trees, count_abstractions=False, count_applications=True)
-            if x is None:
-                baddies.append(i)
-            elif x == []:
-                continue
-            else:
-                f_score, precision, recall = x
-                f_scores.append(f_score)
-                precisions.append(precision)
-                recalls.append(recall)
+    double_tree_terms = []
+    skip_count = 0
+    for i, row in tqdm(df.iterrows(), total=len(df)):
+        if skips and i >= skips[0]:
+            skip_count += 1
+            skips.pop()
 
-                if 0.3 <= precision < 0.4:
-                    study_precisions.append((row["inf_term"], row["true_term"], true_sentence))
-
+        lambda_term_list = row["inf_term"].split()
+        # true_term_list = row["true_term"].split()
+        sent_index = split_numbers[i+skip_count]
+        true_sentence = eval(main_df.iloc[sent_index].tags)
+        f1 = open("/".join(main_df.iloc[sent_index].path.split("/")[1:]))
+        true_term_list = f1.readlines()[0].strip() if not args.simplest else simplest(f1.readlines(), gen_sent = eval(main_df.iloc[i+skip_count, 1]))
+        f1.close()
         
-        print("Proportion of bad trees: ", len(baddies)/len(df))
-
-        #pickle forests
-        with open(f"{split}_forests.pkl", "wb") as f:
-            pickle.dump(forests, f)
-
-        #write csv file of double trees;
-        with open(f"{split}_double_trees.csv", "w") as f:
-            f.write("inf_term,true_term,sentence\n")
-            for term in double_tree_terms:
-                f.write(f"{term[0]},{term[2]},{term[1]}\n")
-
-        print("Mean forest size: ", sum(forest_sizes)/len(forest_sizes))
-        print("Median forest size: ", sorted(forest_sizes)[len(forest_sizes)//2])
-        print("Number of sentences with size of 1", forest_sizes.count(1))
-        print("-----")
+        _, words = preprocess_sent(true_sentence)
+        true_term_list = make_lambda_term_list(words, true_term_list)
         
-        suffix = "app"
-        # Create histogram using seaborn for better default styling
-        plt.figure(figsize=(10, 10))
-        sns.histplot(forest_sizes, bins=max(forest_sizes))
+        try:
+            trees = parse_lambda_term_1(lambda_term_list)
+            forests.append(trees)
+            forest_sizes.append(len(trees))
+            if len(trees) == 2:
+                double_tree_terms.append((" ".join(lambda_term_list), " ".join(words), " ".join(true_term_list)))
+                
+        except:
+            baddies.append(i+skip_count)
+            continue
+        try:
+            true_tree = parse_lambda_term_1(true_term_list)
+            assert len(true_tree) == 1, f"True tree is not a single tree: {true_tree}, {true_term_list}"
+            true_tree = true_tree[0]
+        except Exception as e:
+            print(e)
+            print(traceback.format_exc())
+            raise Exception("This should not have happened. Lamda term is ", true_term_list)
         
-        # Add labels and title
-        plt.xlabel('Forest sizes')
-        plt.ylabel('Count')
-        plt.title('Well-formedness of lambda terms in {} set of length {}'.format(split, len(df)))
-        
-        # Add grid for better readability
-        plt.grid(True, alpha=0.3)
-        #restrict the x-axis to 50
-        plt.xlim(0, 50)
-        plt.savefig(f"{split}_forest_sizes.png")
+        x = fake_eval(true_tree, trees, count_abstractions=args.mode in ("abs", "both"), count_applications=args.mode in ("app", "both"))
+        if x is None:
+            baddies.append(i+skip_count)
+        elif x == []:
+            continue
+        else:
+            f_score, precision, recall = x
+            f_scores.append(f_score)
+            precisions.append(precision)
+            recalls.append(recall)
 
-        plt.clf()
+            if 0.3 <= precision < 0.4:
+                study_precisions.append((row["inf_term"], row["true_term"], true_sentence))
 
-        #create new histogram for precision, recall, and f-score
-        plt.figure(figsize=(10, 10))
-        sns.histplot(f_scores, bins=20)
-        plt.xlabel('F1 scores')
-        plt.ylabel('Count')
-        plt.title('F1 scores of lambda terms in {} set of length {}'.format(split, len(df)))
-        plt.grid(True, alpha=0.3)
-        plt.savefig(f"{split}_f_scores_{suffix}.png")
-        
-        plt.clf()
-        plt.figure(figsize=(10, 10))
-        sns.histplot(precisions, bins=20)
-        plt.xlabel('Precisions')
-        plt.ylabel('Count')
-        plt.title('Precisions of lambda terms in {} set of length {}'.format(split, len(df)))
-        plt.grid(True, alpha=0.3)
-        plt.savefig(f"{split}_precisions_{suffix}.png")
+    
+    print("Proportion of bad trees: ", len(baddies)/len(df))
 
-        plt.clf()
-        plt.figure(figsize=(10, 10))
-        sns.histplot(recalls, bins=20)
-        plt.xlabel('Recalls')
-        plt.ylabel('Count')
-        plt.title('Recalls of lambda terms in {} set of length {}'.format(split, len(df)))
-        plt.grid(True, alpha=0.3)
-        plt.savefig(f"{split}_recalls_{suffix}.png")
+    #pickle forests
+    with open(f"{name}_{split}_forests.pkl", "wb") as f:
+        pickle.dump(forests, f)
 
-        print("--------")
-        print("Average F-score: ", sum(f_scores)/len(f_scores))
-        print("Average Precision: ", sum(precisions)/len(precisions))
-        print("Average Recall: ", sum(recalls)/len(recalls))
-        print("--------")
+    #write csv file of double trees;
+    with open(f"{name}_{split}_double_trees.csv", "w") as f:
+        f.write("inf_term,true_term,sentence\n")
+        for term in double_tree_terms:
+            f.write(f"{term[0]},{term[2]},{term[1]}\n")
 
-        #save study precisions
-        with open(f"{split}_study_precisions.csv", "w") as f:
-            f.write("inf_term,true_term,sentence\n")
-            for term in study_precisions:
-                f.write(f"{term[0]},{term[1]},{term[2]}\n")
+    print("Mean forest size: ", sum(forest_sizes)/len(forest_sizes))
+    print("Median forest size: ", sorted(forest_sizes)[len(forest_sizes)//2])
+    print("Number of sentences with size of 1", forest_sizes.count(1))
+    print("-----")
+    
+    suffix = args.mode
+    # Create histogram using seaborn for better default styling
+    plt.figure(figsize=(10, 10))
+    sns.histplot(forest_sizes, bins=max(forest_sizes))
+    
+    # Add labels and title
+    plt.xlabel('Forest sizes')
+    plt.ylabel('Count')
+    plt.title('Well-formedness of lambda terms in {} set of length {}'.format(split, len(df)))
+    
+    # Add grid for better readability
+    plt.grid(True, alpha=0.3)
+    #restrict the x-axis to 50
+    plt.xlim(0, 50)
+    plt.savefig(f"{name}_{split}_forest_sizes.png")
+
+    plt.clf()
+
+    #create new histogram for precision, recall, and f-score
+    plt.figure(figsize=(10, 10))
+    sns.histplot(f_scores, bins=20)
+    plt.xlabel('F1 scores')
+    plt.ylabel('Count')
+    plt.title('F1 scores of lambda terms in {} set of length {}'.format(split, len(df)))
+    plt.grid(True, alpha=0.3)
+    plt.savefig(f"{name}_{split}_f_scores_{suffix}.png")
+    
+    plt.clf()
+    plt.figure(figsize=(10, 10))
+    sns.histplot(precisions, bins=20)
+    plt.xlabel('Precisions')
+    plt.ylabel('Count')
+    plt.title('Precisions of lambda terms in {} set of length {}'.format(split, len(df)))
+    plt.grid(True, alpha=0.3)
+    plt.savefig(f"{name}_{split}_precisions_{suffix}.png")
+
+    plt.clf()
+    plt.figure(figsize=(10, 10))
+    sns.histplot(recalls, bins=20)
+    plt.xlabel('Recalls')
+    plt.ylabel('Count')
+    plt.title('Recalls of lambda terms in {} set of length {}'.format(split, len(df)))
+    plt.grid(True, alpha=0.3)
+    plt.savefig(f"{name}_{split}_recalls_{suffix}.png")
+
+    print("--------")
+    print("Average F-score: ", sum(f_scores)/len(f_scores))
+    print("Average Precision: ", sum(precisions)/len(precisions))
+    print("Average Recall: ", sum(recalls)/len(recalls))
+    print("--------")
+
+    #save study precisions
+    with open(f"{name}_{split}_study_precisions.csv", "w") as f:
+        f.write("inf_term,true_term,sentence\n")
+        for term in study_precisions:
+            f.write(f"{term[0]},{term[1]},{term[2]}\n")
 
 
 # #test cases:
