@@ -741,13 +741,13 @@ if __name__ == "__main__":
 
         #-- CONFUSION MATRIX --
         # confusion_matrix = compute_confusion_matrix(model, dataloader)
-        # plot_confusion_matrix(confusion_matrix, "test", plot_name=args.name+"_train")
+        # plot_confusion_matrix(confusion_matrix, "train", plot_name=args.name+"_train")
 
         # confusion_matrix = compute_confusion_matrix(model, valid_dataloader)
         # plot_confusion_matrix(confusion_matrix, "valid", plot_name=args.name+"_valid")
 
         confusion_matrix = compute_confusion_matrix(model, test_dataloader)
-        plot_confusion_matrix(confusion_matrix, plot_name=args.name+"_test")
+        plot_confusion_matrix(confusion_matrix, "test", plot_name=args.name+"_test")
     elif args.levenshtein:
     
         #open csv file
@@ -771,58 +771,58 @@ if __name__ == "__main__":
             for row in tqdm.tqdm(reader, total=16363):
                 lev_score, lev_seq = levenshtein_with_mismatch_pairs(row[0].split(), row[1].split())#levenstein_lambda_term(row[0].split(), row[1].split())
                 
-                if lev_score <= 7:
-                    for s in lev_seq:
-                        if s[0] is None:
-                            if s[1] == "λ":
-                                lev_types["missing lambda"] += 1
-                            elif s[1] == "(":
-                                lev_types["missing application"] += 1
-                            elif re.match(r"specvar\d+", s[1]): 
-                                lev_types["missing variable"] += 1
-                            else:
-                                lev_types["missing constant"] += 1
-                        elif s[1] is None:
-                            if s[0] == "λ":
-                                lev_types["extra lambda"] += 1
-                            elif s[0] == "(":
-                                lev_types["extra application"] += 1
-                            elif re.match(r"specvar\d+", s[0]): 
-                                lev_types["extra variable"] += 1
-                            else:
-                                lev_types["extra constant"] += 1
-                        elif s[0] == "λ":
-                            if s[1] == "(":
-                                lev_types["lambda -> app"] += 1
-                            elif re.match(r"specvar\d+", s[1]):
-                                lev_types["lambda -> var"] += 1
-                            else:
-                                lev_types["lambda -> constant"] += 1
-                        elif s[0] == "(":
-                            if s[1] == "λ":
-                                lev_types["application -> lambda"] += 1
-                            elif re.match(r"specvar\d+", s[1]):
-                                lev_types["application -> var"] += 1
-                            else:
-                                lev_types["application -> constant"] += 1
-                        elif re.match(r"specvar\d+", s[0]):
-                            if s[1] == "λ":
-                                lev_types["variable -> lambda"] += 1
-                            elif s[1] == "(":
-                                lev_types["variable -> app"] += 1
-                            elif re.match(r"specvar\d+", s[1]):
-                                lev_types["mismatched variable"] += 1
-                            else:
-                                lev_types["variable -> constant"] += 1
+                # if lev_score <= 7:
+                for s in lev_seq:
+                    if s[0] is None:
+                        if s[1] == "λ":
+                            lev_types["missing lambda"] += 1
+                        elif s[1] == "(":
+                            lev_types["missing application"] += 1
+                        elif re.match(r"specvar\d+", s[1]): 
+                            lev_types["missing variable"] += 1
                         else:
-                            if s[1] == "λ":
-                                lev_types["constant -> lambda"] += 1
-                            elif s[1] == "(":
-                                lev_types["constant -> app"] += 1
-                            elif re.match(r"specvar\d+", s[1]):
-                                lev_types["constant -> var"] += 1
-                            else:
-                                lev_types["mismatched constant"] += 1
+                            lev_types["missing constant"] += 1
+                    elif s[1] is None:
+                        if s[0] == "λ":
+                            lev_types["extra lambda"] += 1
+                        elif s[0] == "(":
+                            lev_types["extra application"] += 1
+                        elif re.match(r"specvar\d+", s[0]): 
+                            lev_types["extra variable"] += 1
+                        else:
+                            lev_types["extra constant"] += 1
+                    elif s[0] == "λ":
+                        if s[1] == "(":
+                            lev_types["lambda -> app"] += 1
+                        elif re.match(r"specvar\d+", s[1]):
+                            lev_types["lambda -> var"] += 1
+                        else:
+                            lev_types["lambda -> constant"] += 1
+                    elif s[0] == "(":
+                        if s[1] == "λ":
+                            lev_types["application -> lambda"] += 1
+                        elif re.match(r"specvar\d+", s[1]):
+                            lev_types["application -> var"] += 1
+                        else:
+                            lev_types["application -> constant"] += 1
+                    elif re.match(r"specvar\d+", s[0]):
+                        if s[1] == "λ":
+                            lev_types["variable -> lambda"] += 1
+                        elif s[1] == "(":
+                            lev_types["variable -> app"] += 1
+                        elif re.match(r"specvar\d+", s[1]):
+                            lev_types["mismatched variable"] += 1
+                        else:
+                            lev_types["variable -> constant"] += 1
+                    else:
+                        if s[1] == "λ":
+                            lev_types["constant -> lambda"] += 1
+                        elif s[1] == "(":
+                            lev_types["constant -> app"] += 1
+                        elif re.match(r"specvar\d+", s[1]):
+                            lev_types["constant -> var"] += 1
+                        else:
+                            lev_types["mismatched constant"] += 1
                 
 
                 # print("True levenshtein distance: ", "Normalized true lev dist: ", )

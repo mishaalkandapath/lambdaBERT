@@ -7,13 +7,15 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import traceback 
 
-from transformers import BertTokenizerFast, BertModel
+from transformers import BertTokenizerFast, BertModel, RobertaTokenizerFast
 
 
 TOKENIZER_MULTILINGUAL = BertTokenizerFast.from_pretrained("bert-base-multilingual-cased") #
 TOKENIZER_BASE = BertTokenizerFast.from_pretrained("bert-base-uncased")
+TOKENIZER_ROBERTA = RobertaTokenizerFast.from_pretrained("FacebookAI/roberta-base")
 TOKENIZER = {"multilingual_bert": TOKENIZER_MULTILINGUAL, 
-             "bert_base": TOKENIZER_BASE}
+             "bert_base": TOKENIZER_BASE,
+             "roberta_base":TOKENIZER_ROBERTA}
 
 class LambdaTerm:
     pass
