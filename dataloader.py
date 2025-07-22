@@ -8,7 +8,7 @@ import pandas as pd
 from tokenization import preprocess_sent
 from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence
 
-import traceback, pickle
+import traceback, pickle, os
 
 #create a directory where the key is a csv. each row has first column as the raw text sentence, and the second col being the 
 # path to the file that stores all its lambda terms
@@ -656,7 +656,7 @@ SPEC_SENTENCE_INDICES = [8076, 132621, 62224, 132626, 85396, 126868, 85398, 8345
 class ShuffledLambdaTermsDataset(Dataset):
     def __init__(self, input_sentences_file, main_dir, transform=None, target_transform=None, last=False, inference=False):
         self.main_dir = main_dir
-        self.input_sentences = pd.read_csv(input_sentences_file)
+        self.input_sentences = pd.read_csv(input_sentences_file, header=None)
         self.transform = transform
         self.target_transform = target_transform
         self.last = last
@@ -697,8 +697,8 @@ class ShuffledLambdaTermsDataset(Dataset):
                 raise Exception
 
         #sep token for target embedding:
-        target_embs = torch.cat([torch.tensor(BOS_TOKEN).squeeze(0), target_embs, torch.tensor(SEP_TOKEN).squeeze(0)], dim=0)
-        target_embs_last = torch.cat([torch.tensor(BOS_TOKEN_LAST).squeeze(0), target_embs_last, torch.tensor(SEP_TOKEN_LAST).squeeze(0)], dim=0)
+        target_embs = torch.cat([torch.tensor(BOS_TOKEN[os.environ["BERT_TYPE"]]).squeeze(0), target_embs, torch.tensor(SEP_TOKEN[os.environ["BERT_TYPE"]]).squeeze(0)], dim=0)
+        target_embs_last = torch.cat([torch.tensor(BOS_TOKEN_LAST[os.environ["BERT_TYPE"]]).squeeze(0), target_embs_last, torch.tensor(SEP_TOKEN_LAST[os.environ["BERT_TYPE"]]).squeeze(0)], dim=0)
         target_tokens = [101] + target_tokens + [102]
         lambda_index_mask = [0] + lambda_index_mask + [0]
         var_index_mask_no = [0] + var_index_mask_no + [0]

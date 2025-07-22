@@ -278,7 +278,7 @@ def main(hparams=None, load_chckpnt=False, **kwargs):
         save_on_train_epoch_end=True)
     
     # profiler = AdvancedProfiler(filename="out_log.txt")
-    trainer = L.Trainer(max_epochs=120, callbacks=[checkpointing], log_every_n_steps=1, num_sanity_val_steps=0, logger=logger, default_root_dir=SAVE_DIR+"models/")#, profiler=profiler)
+    trainer = L.Trainer(max_epochs=240, callbacks=[checkpointing], log_every_n_steps=1, num_sanity_val_steps=0, logger=logger, default_root_dir=SAVE_DIR+"models/")#, profiler=profiler)
     train_dataloader, val_dataloader, test_dataloader = dataloader.data_init(kwargs["batch_size"], last=kwargs["bert_is_last"], rem_spec_sentences=kwargs["rem_spec_sentences"], data_path=kwargs["data_path"])
     trainer.fit(model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader)
 
@@ -308,6 +308,7 @@ if __name__ == "__main__":
     SAVE_DIR = args.save_dir
     torch.manual_seed(0)
     #assert (args.model_is_discrete and args.model_path) or (args.model_path) or not (args.model_is_discrete or args.model_path), "model path for discrete model to be provided"
+    assert os.environ["BERT_TYPE"] in ("multilingual_bert", "bert_base")
     main(load_chckpnt=args.model_path, t_force=args.t_force,
          t_damp=args.t_damp, batch_size=args.batch_size, 
          custom_t=args.custom_transformer,
