@@ -59,8 +59,14 @@ class InferenceModel(nn.Module):
     
     @dispatch(torch.Tensor, torch.Tensor)
     def forward(self, in_embs, in_tokens, max_len=20, beam_size=0, last=False, bos=None, reference_target=None):
-        if beam_size > 1: 
-            return self.beam_search_inference(in_embs, in_tokens, max_len=max_len, beam_size=beam_size, last=last, bos=bos)
+        # if beam_size > 1: 
+        #     return self.beam_search_inference(in_embs, in_tokens, max_len=max_len, beam_size=beam_size, last=last, bos=bos)
+        if beam_size > 1:
+            return self.beam_search_classes(in_embs, 
+                                            in_tokens,
+                                            max_len=max_len,
+                                            beam_size=beam_size,
+                                            last=last)
         prs = []
         x = torch.tensor(BOS_TOKEN[os.environ["BERT_TYPE"]] if not last else BOS_TOKEN_LAST[os.environ["BERT_TYPE"]]).to(in_embs.device) if bos is None else bos
         out_stacked, classified_class_stacked, classified_class_stacked_unfiltered, var_reg_stacked = x, torch.tensor([[0]]).long().to(in_embs.device), None, None
@@ -117,177 +123,171 @@ class InferenceModel(nn.Module):
 
         return list_out
 
-    def beam_search_tokens(self, in_embs, in_tokens, max_len=20, beam_size=1, prejudice_tokens=None, bos=None):
-        self.model.eval()
-        x = BOS_TOKEN_LAST[os.environ["BERT_TYPE"]] if bos is not None else bos
-        out_stacked, classified_class_stacked, classified_class_stacked_unfiltered, var_reg_stacked = x, torch.tensor([[0]]).long().to(x.device), None, None
-        list_out = []
-        cls_out = []
-        var_out = []
-        prob_list = []
-        probs_list = []
-
-        left_over_words = False
-
-        while out_stacked.size(1) < max_len:
-            out, classified_class, var_reg = self.model(x, classified_class_stacked, in_embs, mb_pad=torch.zeros(in_embs.shape[:-1]).to(x.device).to(torch.bool), device=x.device)
-
-            classified_class = nn.functional.softmax(classified_class, dim=-1)
-
-            if torch.any(classified_class[:, -1].argmax(dim=-1) == 0):
-                # beams
-                pass
-            else: # pass as normal
-                last_prob = classified_class[:, -1].max(dim=-1)[0]
-                prob_list = last_prob # since no beams are added at this point
-                probs_list *= last_prob
-                out_stacked = torch.cat([out_stacked, out[:, -1].unsqueeze(1)], dim=1) # not a word so no need to refine. 
-
-            classified_class_ = classified_class.argmax(dim=-1) 
-            classified_class_stacked_unfiltered = classified_class if var_reg_stacked is None else torch.cat([classified_class_stacked_unfiltered, classified_class[:, -1].unsqueeze(1)], dim=1)
-            var_reg_stacked = var_reg if var_reg_stacked is None else torch.cat([var_reg_stacked, var_reg[:, -1].unsqueeze(1)], dim=1)
-            classified_class_stacked = torch.cat([classified_class_stacked, classified_class_[:, -1].unsqueeze(1)], dim=1)
-
-        x = out_stacked
-        return out_stacked[:, 1:], classified_class_stacked_unfiltered, var_reg_stacked, torch.tensor(probs_list)
-
-    def beam_search_inference(self, in_embs, in_tokens, max_len=20, classify=True, beam_size=1, last=True, bos=None, reference=None): # TODO: make beam start from 5 -- number of classes
-        self.model.eval()
-        x = x = torch.tensor(BOS_TOKEN[os.environ["BERT_TYPE"]] if not last else BOS_TOKEN_LAST[os.environ["BERT_TYPE"]]).to(in_embs.device) if bos is None else bos#torch.tensor(BOS_TOKEN_LAST[os.environ["BERT_TYPE"]]).to(in_embs.device)
-        out_stacked, classified_class_stacked, var_reg_stacked, newest_out = x, torch.tensor([[0]]).long().to(x.device) if classify else None, None, None
-        list_out = []
-        cls_out = []
-        var_out = []
-        prob_list = []
-        probs_list = []
-        beam_size =1
-
-        while out_stacked.size(1) < max_len:
-            # process each beam 
-            outs = self.model(x, classified_class_stacked, in_embs, mb_pad=torch.zeros(in_embs.shape[:-1]).to(x.device).to(torch.bool), device=x.device)
-            if len(outs) == 3: out, classified_class, var_reg = outs
-            else:
-                out, classified_class = outs
-                var_reg = None
-            print(out_stacked)
-            # print(nn.functional.softmax(classified_class, dim=-1))
-            # if out_stacked.size(1) > 11:
-            #     raise Exception
-            if classify: 
-                # did we have a lambda last time?
-                # lmda_mask = torch.where(classified_class_stacked[:, -1] == 2)
-                # classified_class[lmda_mask[0], -1, 0] = -torch.inf # cant be a word
-                # classified_class[lmda_mask[0], -1, 2:] = -torch.inf
-                # classified_class[lmda_mask[0], -1, 2] += 1e-4 # small boost
-
-                #sort for beams
-                classified_class = nn.functional.softmax(classified_class, dim=-1)
-                cls_probs, classified_class = classified_class.sort(-1, descending=True) # batch x length x 4
-                #classified_class = classified_class[:, :, :beam_size] # batch x length x beam
-                #cls_probs = cls_probs[:, :, :beam_size] # batch x length x beam
-                
-                #make beams
-                if prob_list == []: #first time
-                    classified_class = classified_class[:, :, :beam_size].squeeze(0).T # beam x length -- because batch is 1
-                    cls_probs = cls_probs[:, :, :beam_size].squeeze(0).T # similarly 
-                    prob_list.extend(sum(cls_probs.tolist(), start=[])) #get the different beam probabilities -- not gonna log coz it might be to small or smth
-                    probs_list.extend(sum(cls_probs.tolist(), start=[]))
-                    probs_list = torch.tensor(probs_list).to(classified_class.device).unsqueeze(1)
-                    b_indices = [0]*min(beam_size, 4)
-                else:
-                    # get the beam best from each, flatten, take beam best 
-                    #beam x length x 1 * batch x beam x length
-                    #prod the prbabilities to get the sequences probability so far
-                    cl_og = cls_probs
-                    cls_probs, classified_class_ = (torch.tensor(prob_list).to(x.device).unsqueeze(-1) * cls_probs.transpose(-1, -2)[:, : , -1]).flatten().sort(descending=True)               
-                    cl_og = cl_og.transpose(-1, -2)[:, : , -1].flatten()[classified_class_]
-                    #at this point i have sorted for each of the previous beams, its best succeeding beams. 
-                    classified_class_ = classified_class_[:beam_size]
-                    b_indices = classified_class_//classified_class.size(-1) #which previous beam is it from?
-                    cl_indices = classified_class_ % classified_class.size(-1) #which new beam is it?
-
-                    cls_probs = cls_probs[:beam_size]
-                    cl_og = cl_og[:beam_size]
-
-                    #classified class needs to be beam x length
-                    classified_class = classified_class[b_indices, :, cl_indices]
-
-                    #modify prob_list
-                    prob_list = torch.tensor(prob_list).to(b_indices.device)[b_indices] if type(prob_list) is list else prob_list[b_indices]
-                    probs_list = probs_list[b_indices]
-                    probs_list = torch.cat([probs_list, cl_og.unsqueeze(1)], dim=-1)
-                    prob_list *= cls_probs
-                    # print(prob_list, cls_probs)
-            
-            in_embs = torch.repeat_interleave(in_embs[0:1], len(b_indices), dim=0).to(x.device)
-            app_indices, var_indices, lambda_indices = torch.where(classified_class[:, -1]== 3)[0], torch.where(classified_class[:, -1] == 2)[0], torch.where(classified_class[:, -1] == 1)[0]
-            out = out[b_indices]
-
-            word_replaced = in_embs[0, get_closest_idx(out[:, -1], in_embs)]
-            if lambda_indices.tolist() != []: word_replaced[lambda_indices] = torch.tensor(LAMBDA_LAST[os.environ["BERT_TYPE"]] if last else LAMBDA[os.environ["BERT_TYPE"]]).unsqueeze(0).to(x.device)
-            if app_indices.tolist() != []:  
-                word_replaced[app_indices] = torch.tensor(OPEN_RRB_LAST[os.environ["BERT_TYPE"]] if last else OPEN_RRB[os.environ["BERT_TYPE"]]).unsqueeze(0).to(x.device)
-            if var_indices.tolist() != []:  word_replaced[var_indices] = ALL_VAR_EMBS[get_closest_var_idx(out[:, -1])].to(x.device)
-            
-            if out_stacked.size(1) > 2:
-            # #     print(reference[0, out_stacked.size(1)-1])
-            # #     print(((reference[0, out_stacked.size(1)-1] - out[0, -1])**2).sum(dim=-1))
-            # #     print(word_replaced, notword_indices)
-                time.sleep(60)
-            if out_stacked.size(1) == 1:
-                var_reg_stacked = var_reg
-                out_stacked = torch.cat([out_stacked[b_indices], word_replaced.unsqueeze(1)], dim=1) 
-                if var_reg is not None: var_reg_stacked = var_reg_stacked.squeeze(0).repeat(min(beam_size, 4), 1, 1)
-                classified_class_stacked = classified_class_stacked.squeeze(0).repeat(min(beam_size, 4), 1)
-                classified_class_stacked = torch.cat([classified_class_stacked, classified_class[:, -1].unsqueeze(1)], dim=1)
-                
-            else:
-                out_stacked = torch.cat([out_stacked[b_indices], word_replaced.unsqueeze(1)], dim=1) # get the outputs of these batches only
-                if var_reg is not None: var_reg_stacked = torch.cat([var_reg_stacked[b_indices], var_reg[b_indices, -1].unsqueeze(1)], dim=1)
-                classified_class_stacked = torch.cat([classified_class_stacked[b_indices], classified_class[:, -1].unsqueeze(1)], dim=1)           
-
-            if not classify: cls_probs = nn.functional.softmax(classified_class[-1, -1], dim=-1)
-            
-            # check if theres a sentence that is to be stopped
-            rem_list = []
-            not_rem = []
-            for i in range(classified_class_stacked.size(0)):
-                if (classified_class_stacked[i, -1] == 0): # if we have a word
-                    # sorted_stiff, newest_out = self.linear(out_stacked[i, -1, :]).sort(-1)
-                    # newest_out = newest_out[-1].item()
-                    newest_out = get_closest_idx(out_stacked[i, -1], in_embs[0], in_tokens[0], sep_allowed = torch.count_nonzero(classified_class_stacked[i] == 0) == len(in_embs[0]))
-                else: newest_out = None
-                if newest_out == 102 or (out_stacked.size(1) == max_len and len(list_out) != beam_size): 
-                    # print(TOKENIZER.convert_ids_to_tokens([newest_out]))
-                    if len(list_out) < beam_size or prob_list[i] > list_out[0][0]:
-                        if len(list_out) == beam_size: list_out = list_out[1:]
-                        list_out.append((prob_list[i], random.random(), probs_list[i].detach().cpu(), out_stacked[i, 1:], 
-                                                                    classified_class_stacked[i, 1:],
-                                                                    var_reg_stacked[i] if var_reg_stacked is not None else None)) # save the sequence
-                        list_out.sort() # maintain ordering
-                        rem_list.append(i)
-                        continue
-                not_rem.append(i)
-                assert len(list_out) <= beam_size, len(list_out)
-            if len(rem_list) == beam_size: break
-            
-            for i in rem_list:
-                probs_list[i] = probs_list[not_rem[0]]
-                prob_list[i] = prob_list[not_rem[0]]
-                out_stacked[i] = out_stacked[not_rem[0]]
-                if var_reg_stacked is not None: var_reg_stacked[i] = var_reg[not_rem[0]]
-                classified_class_stacked[i] = classified_class_stacked[not_rem[0]]
-
-            x = out_stacked
-            assert len(list_out) <= beam_size, len(list_out)
-    
-        assert len(list_out) <= beam_size, len(list_out)
-        list_out.sort(key=lambda x: x[0], reverse=True)
-        ps, _, pss, list_out, cls_out, var_out = (zip(*list_out))   
-        # print(pss)
-        return list_out, cls_out, var_out, pss
-
     @dispatch(torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor)   
     def forward(self, seq, seq_syntax, in_embs, mb_pad):
         outs = self.model(seq, seq_syntax, in_embs, mb_pad=mb_pad , device=seq.device)
         return outs
+    
+    def beam_search_classes(self, in_embs, in_tokens, last=True, beam_size=1, max_len=20):
+        self.model.eval()
+        with torch.no_grad():
+            (out_stacked, 
+            classified_class_stacked,
+            classified_class_unnormalized) = ((BOS_TOKEN_LAST if last else BOS_TOKEN)[os.environ["BERT_TYPE"]], 
+                                torch.tensor([[0]]).long().to(in_embs.device),
+                                None)
+            out_stacked = torch.tensor(out_stacked).to(in_embs.device)
+            out_tokens_stacked = [[BOS_ID]]
+            prs = torch.zeros(out_stacked.size(0)).to(in_embs.device)
+            beams_left = beam_size
+            finished_sentences = []
+            finished_prs = []
+            finished_classes = []
+            while (out_stacked.size(1) < max_len and 
+                len(finished_sentences) < beam_size):
+                out, classified_class = self.model(out_stacked,
+                                                        classified_class_stacked,
+                                                        in_embs,
+                                                        mb_pad=torch.zeros(in_embs.shape[:-1]).to(out_stacked.device).to(torch.bool))
+                classified_class_unnormalized = torch.clone(classified_class)
+                classified_class = nn.functional.log_softmax(classified_class,
+                                                                dim=-1)
+                
+                #if we are generating the first token, it is an application
+                if out_stacked.size(1) == 1:
+                    classified_class_stacked = torch.cat(
+                                            [classified_class_stacked, 
+                                            torch.tensor([[3]]).to(in_embs.device)
+                                            ],
+                                            dim=1
+                                        )
+                    out_stacked = torch.cat([out_stacked, 
+                                               torch.tensor((OPEN_RRB_LAST if last else OPEN_RRB)[os.environ["BERT_TYPE"]]).unsqueeze(0).unsqueeze(0).to(in_embs.device)
+                                               ],
+                                               dim=1
+                                            )
+                    continue
+
+                # for beams with last prediction == lambda, it must be var next. 
+                lambda_batches_indices = torch.where(
+                                            classified_class_stacked[:, -1] == 2
+                                        )[0].to(in_embs.device)
+                #process probability of var
+                lambda_classes_batched = classified_class[lambda_batches_indices, -1, 1].to(in_embs.device)
+                lambda_classes_class = torch.tensor(
+                                                [1]*lambda_batches_indices.size(0)
+                                        ).to(in_embs.device)
+                                            
+                # it can be anything for beams with word, var, or app
+                rest_batch_indices = torch.where(
+                                                classified_class_stacked[:, -1] != 2)[0].to(in_embs.device)
+                rest_classes_batched = classified_class[rest_batch_indices, -1].flatten().to(in_embs.device)
+                rest_classes_class = torch.arange(0, 4).repeat(rest_batch_indices.size(0)).to(in_embs.device)
+                rest_classes_beam_index = rest_batch_indices.repeat_interleave(4).to(in_embs.device)
+                
+                #combine probabilities for ranking
+                all_classes_batched = torch.cat([rest_classes_batched,
+                                                lambda_classes_batched])
+                all_classes_class = torch.cat([rest_classes_class,
+                                                lambda_classes_class])
+                all_classes_beam_index = torch.cat([rest_classes_beam_index,
+                                                    lambda_batches_indices])
+
+                # sum
+                all_classes_batched += torch.gather(prs,
+                                                    0,                   
+                                                    all_classes_beam_index)
+                # rank
+                prs, all_classes_batched = torch.sort(all_classes_batched, stable=True,descending=True)
+                prs, all_classes_batched = prs[:beams_left], all_classes_batched[:beams_left]
+                all_classes_class = all_classes_class[all_classes_batched]
+                all_classes_beam_index = all_classes_beam_index[all_classes_batched]
+
+                #make out stacked, var_reg_stacked, and classified_class_stacked
+                classified_class_stacked = torch.cat(
+                                        [classified_class_stacked[all_classes_beam_index], all_classes_class.unsqueeze(1)],
+                                        dim=1
+                                    )
+                (word_indices, var_indices,
+                lamda_indices, app_indices) = (
+                    torch.where(all_classes_class == 0)[0],
+                    torch.where(all_classes_class == 1)[0],
+                    torch.where(all_classes_class == 2)[0],
+                    torch.where(all_classes_class == 3)[0]
+                )
+                out = out[all_classes_beam_index]
+                out_stacked = out_stacked[all_classes_beam_index]
+                out_tokens_stacked = [out_tokens_stacked[i] for i in all_classes_beam_index]
+                new_out = out[:, -1]
+                classified_class_unnormalized = classified_class_unnormalized[all_classes_beam_index]
+
+                
+                new_out[lamda_indices] = torch.tensor((LAMBDA_LAST if last else LAMBDA)[os.environ["BERT_TYPE"]]).to(in_embs.device)
+                new_out[app_indices] = torch.tensor((OPEN_RRB_LAST if last else OPEN_RRB)[os.environ["BERT_TYPE"]]).to(in_embs.device)
+
+                end_indices = []
+                for word_index in word_indices:
+                    sep_allowed = len(set(out_tokens_stacked[word_index])) == (in_tokens[0].size(0) - 1)
+                    if sep_allowed:
+                        end_indices += [word_index]
+                        out_tokens_stacked[word_index] += [SEP_ID]
+                        continue
+                    closest_index = get_closest_idx(
+                                                    out[word_index, -1],
+                                                    in_embs[0], 
+                                                    in_tokens[0],
+                                                    sep_allowed=False
+                                                )
+                    new_out[word_index] = in_embs[
+                        0, 
+                        closest_index
+                    ]
+                    out_tokens_stacked[word_index] += [in_tokens[0, closest_index]]
+                    
+                for var_index in var_indices:
+                    new_out[var_index] = ALL_VAR_EMBS[get_closest_var_idx(
+                        out[var_index, -1], var_count=torch.count_nonzero(classified_class_stacked[var_index] == 1)
+                    )].to(in_embs.device)
+
+                out_stacked = torch.cat([
+                                out_stacked, 
+                                new_out.unsqueeze(1)],
+                                dim=1)
+
+                for end_index in end_indices:
+                    finished_sentences.append(out_stacked[end_index, 1:])
+                    finished_classes.append(classified_class_stacked[end_index, 1:].to(dtype=torch.int64))
+                    finished_prs.append(classified_class_unnormalized[end_index])
+                    out_stacked = torch.cat([
+                            out_stacked[:end_index],
+                            out_stacked[end_index + 1:]
+                        ],
+                        dim=0)
+                    classified_class_stacked = torch.cat([
+                            classified_class_stacked[:end_index],
+                            classified_class_stacked[end_index + 1:]
+                        ],
+                        dim=0)
+                    prs = torch.cat([
+                            prs[:end_index],
+                            prs[end_index + 1:]
+                        ],
+                        dim=0)
+                    classified_class_unnormalized = torch.cat([
+                            classified_class_unnormalized[:end_index],
+                            classified_class_unnormalized[end_index + 1:]
+                        ],
+                        dim=0)
+
+                    out_tokens_stacked = out_tokens_stacked[:end_index] + out_tokens_stacked[end_index+1:]
+                    beams_left-=1
+                
+                in_embs = in_embs[[0]*beams_left] if in_embs.size(0) != beams_left else in_embs
+                classified_class_stacked = classified_class_stacked.to(dtype=torch.int32)
+            if beams_left:
+                for i in range(beams_left):
+                    finished_sentences.append(out_stacked[i, 1:])
+                    finished_classes.append(classified_class_stacked[i, 1:].to(dtype=torch.int64))
+                    finished_prs.append(classified_class_unnormalized[i])
+            return (finished_sentences, finished_classes,
+                    None, finished_prs)
