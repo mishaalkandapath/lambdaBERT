@@ -1,11 +1,10 @@
 import os
+import waitGPU
+if __name__ == "__main__":
+    waitGPU.wait(memory_ratio=0.001,
+                gpu_ids=list(range(2)), interval=10, nproc=1, ngpu=1)
 import pickle
 import matplotlib.pyplot as plt
-
-# import waitGPU
-# if __name__ == "__main__":
-#     waitGPU.wait(memory_ratio=0.001,
-#                 gpu_ids=[0, 1], interval=10, nproc=1, ngpu=1)
 
 from models import *
 import dataloader
@@ -15,6 +14,7 @@ from dataloader import (BOS_TOKEN, BOS_TOKEN_LAST, BOS_ID, SEP_ID)
 from inference_model import InferenceModel, get_closest_idx, get_closest_var_idx
 
 import torch 
+    
 import torch.nn as nn
 import numpy as np
 
@@ -30,11 +30,18 @@ import random
 import time
 from utils import ThreadLockDict
 
-DEVICE = torch.device("cuda")
+DEVICE = torch.device("cuda:0")
 
 SPEC_TOKENS = {"multilingual_bert": {"lambda": 475, "app": 113},
                 "bert_base": {"lambda": 1165, "app": 1006},
                 "roberta_base": {"lambda": 48191, "app":1640}}
+
+def clean_lambda_tokens(text):
+    # Add spaces around lambda calculus symbols
+    text = re.sub(r'([()λ])', r' \1 ', text)  # Space around parens and lambda
+    text = re.sub(r'\s+', ' ', text)  # Clean up multiple spaces
+    text = text.strip()
+    return text
 
 def get_mapped_out_sequences(in_tokens, out_tokens, spec_tokens=False):
     in_sentence = TOKENIZER[os.environ["BERT_TYPE"]].convert_ids_to_tokens(in_tokens)
@@ -60,26 +67,33 @@ def obtain_target_lambda_sequence(
     in_tokens = in_tokens.tolist()
     offset = 0
     for i in var_indices.tolist():
-        t = TOKENIZER[os.environ["BERT_TYPE"]].encode(f"x{var_indices_no[i]}", add_special_tokens=False)
+        t = TOKENIZER[os.environ["BERT_TYPE"]].encode(f"x{var_indices_no[i]}" if "roberta" not in os.environ["BERT_TYPE"] else f" x{var_indices_no[i]} ", add_special_tokens=False)
         in_tokens = in_tokens[:i+offset] + t + in_tokens[i+1+offset:]
         offset += len(t) - 1
     in_tokens = torch.tensor(in_tokens)
 
-    word_list = TOKENIZER[os.environ["BERT_TYPE"]].decode(in_tokens).split()
+    word_list = TOKENIZER[os.environ["BERT_TYPE"]].decode(in_tokens)
+    word_list = clean_lambda_tokens(word_list)
+    word_list = word_list.split()
     return word_list[1:-1]
 
 def get_out_list(out, classified_class, var_reg,
                   in_embs, in_tokens, dynamic_vars=False,
-                    get_indices=False):
+                    get_indices=False,
+                    ret_token_indices=False):
     out_list = []
+    out_indices = []
     if len(classified_class.shape) > 1: classified_class = classified_class.argmax(dim=-1).squeeze(0)
     for i in range(out.size(0)):
         leftover_words = torch.count_nonzero(classified_class[:i] == 0) == in_embs.size(0) - 2
         if classified_class[i] == 0:
-            token_idx = in_tokens[get_closest_idx(out[i, :], in_embs, in_tokens)]
-            out_list.append(token_idx)
+            cl_idx = get_closest_idx(out[i, :], in_embs, in_tokens, )
+            token_idx = in_tokens[cl_idx]
+            out_list.append(token_idx.item())
+            out_indices.append(cl_idx)
         else:
             out_list.append(BOS_ID[os.environ["BERT_TYPE"]])
+            out_indices.append(-1)
     assert len(out_list) == out.size(0)
     assert out.size(0) == classified_class.size(0), f"{out.shape} {classified_class.shape}"
 
@@ -111,15 +125,22 @@ def get_out_list(out, classified_class, var_reg,
         for i in var_indices:
             out_emb = out[i]
             var_idx = get_closest_var_idx(out_emb, var_count=i)
-            t = TOKENIZER[os.environ["BERT_TYPE"]].encode(f"specvar{var_idx}", add_special_tokens=False)
+            t = TOKENIZER[os.environ["BERT_TYPE"]].encode(f" specvar{var_idx} ", add_special_tokens=False)
             out_list = out_list[:i+offset] + t + out_list[i+1+offset:]
             offset += len(t) - 1
             # out_list[i] = f"x{var_idx}"
-    out_list = TOKENIZER[os.environ["BERT_TYPE"]].decode(out_list) 
-    out_list = out_list.split()
-    if get_indices:
-        return " ".join(out_list), out_list
-    return " ".join(out_list)
+
+    if not ret_token_indices:
+        out_list = TOKENIZER[os.environ["BERT_TYPE"]].decode(out_list) 
+        if "roberta" in os.environ["BERT_TYPE"]: out_list = clean_lambda_tokens(out_list)
+        out_list = out_list.split()
+        if get_indices:
+            return " ".join(out_list), out_list
+        return " ".join(out_list)
+    else:
+        out_list = [TOKENIZER[os.environ["BERT_TYPE"]].decode(st) for st in out_list]
+        return out_list, out_indices
+        
 
 def teacher_forcing(model, batch):
     global BOS_TOKEN_LAST, BOS_TOKEN
@@ -151,7 +172,11 @@ def teacher_forcing(model, batch):
 
 def model_inference(model, dataloader, 
                     max_len=200, last=False, 
-                    beam_size=1, split="train"):
+                    beam_size=1, split="train",
+                    word_beam=False,
+                    stop_early=False,
+                    stop_duplicates=False,
+                    ret_token_indices=False):
     global DEVICE
     model.to(DEVICE)
     model.eval()
@@ -161,6 +186,7 @@ def model_inference(model, dataloader,
     outs = []
 
     for_dist_out = []
+    for_dist_out_ret = []
     skips = []
 
     prs, ps = [], []
@@ -183,14 +209,18 @@ def model_inference(model, dataloader,
             pr = torch.gather(pr, -1, gt_cls_mask.unsqueeze(-1)).squeeze(-1) 
             
             #Write the written outputs:
-            outs.append([list(zip(gt_cls_mask.squeeze(0).tolist(), pr.squeeze(0).tolist())), get_out_list(out[0], classified_class[0], var_reg[0] if var_reg is not None else None, in_embs[0], in_tokens[0]), pr.prod(dim=-1).squeeze(0).item()])
+            # outs.append([list(zip(gt_cls_mask.squeeze(0).tolist(), pr.squeeze(0).tolist())), get_out_list(out[0], classified_class[0], var_reg[0] if var_reg is not None else None, in_embs[0], in_tokens[0]), pr.prod(dim=-1).squeeze(0).item()])
             
-            out_inf, classified_class_inf, var_reg_inf, probs_inf = model(in_embs, in_tokens, max_len=max_len, last=last, beam_size=beam_size, bos=bos, reference_target=out)
+            out_inf, classified_class_inf, var_reg_inf, probs_inf = model(in_embs, in_tokens, max_len=max_len, last=last, beam_size=beam_size, bos=bos, reference_target=out,
+            word_beam=word_beam, stop_early=stop_early, stop_duplicates=stop_duplicates)
 
             if beam_size <= 1: 
+                # outs.append([list(zip(classified_class_inf.argmax(-1).squeeze(0).tolist(), classified_class_inf.max(dim=-1)[0].squeeze(0).tolist())), got_seq, probs_inf.prod().item()])
                 got_seq = get_out_list(out_inf[0], classified_class_inf[0], var_reg_inf[0] if var_reg_inf is not None else None, in_embs[0], in_tokens[0])
-                outs.append([list(zip(classified_class_inf.argmax(-1).squeeze(0).tolist(), classified_class_inf.max(dim=-1)[0].squeeze(0).tolist())), got_seq, probs_inf.prod().item()])
                 for_dist_out.append([" ".join(true_tokens), got_seq])
+                if ret_token_indices:
+                    got_seq, got_indices = get_out_list(out_inf[0], classified_class_inf[0], var_reg_inf[0] if var_reg_inf is not None else None, in_embs[0], in_tokens[0], ret_token_indices=ret_token_indices)
+                    for_dist_out_ret.append([got_seq, got_indices])
                 p = probs_inf.prod().item()
             else:
                 # p = -1
@@ -252,6 +282,11 @@ def model_inference(model, dataloader,
         csv_writer = csv.writer(csv_file)
         csv_writer.writerows(for_dist_out)
         csv_file.close()
+        print(f"Wrote {len(for_dist_out)} lines to csv file")
+        if ret_token_indices:
+            pickled_f = open(f"outputs/{split}_all_lev.pkl", "wb")
+            pickle.dump(for_dist_out_ret, pickled_f)
+            pickled_f.close()
 
     skips_file = open(f"outputs/{split}_all_lev_skips.pkl", "wb")
     pickle.dump(skips, skips_file)
@@ -275,15 +310,23 @@ if __name__ == "__main__":
     parser.add_argument("--last", action="store_true")
     parser.add_argument("--custom", action="store_true")
     parser.add_argument("--beam_size", type=int, default=1)
-    parser.add_argument("--data_path", default="")
-    parser.add_argument("--name", default="")
+    parser.add_argument("--data_path", default="", required=True)
+    parser.add_argument("--name", default="", required=True)
+    parser.add_argument("--word_beam", action="store_true")
+    parser.add_argument("--bert_type", required=True)
+    parser.add_argument("--stop_early", action="store_true")
+    parser.add_argument("--stop_duplicates", action="store_true")
+    parser.add_argument("--ret_token_indices", action="store_true")
+    parser.add_argument("--filtered", action="store_true")
+    parser.add_argument("--simplest", action="store_true")
 
     args = parser.parse_args()
 
-    os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+    # os.environ["CUDA_VISIBLE_DEVICES"] = "2"
     os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
+    os.environ["BERT_TYPE"] = args.bert_type
 
-    DEVICE = torch.device("cpu") if args.cpu else torch.device("cuda")
+    DEVICE = torch.device("cpu") if args.cpu else torch.device("cuda:0")
 
     assert os.environ["BERT_TYPE"] in SPEC_TOKENS
     print("---Model type is ", os.environ["BERT_TYPE"])
@@ -296,8 +339,14 @@ if __name__ == "__main__":
     model.load_state_dict(model_weights)
 
     model = InferenceModel(model)
-    train_dataloader, valid_dataloader, test_dataloader = dataloader.data_init(1, last=args.last, inference=True, data_path=args.data_path, rem_spec_sentences=True)
+    train_dataloader, valid_dataloader, test_dataloader = dataloader.data_init(1, last=args.last, inference=True, data_path=args.data_path, rem_spec_sentences=True, filtered=args.filtered, simplest=args.simplest)
     
+    # sanity test
+    # pbar = tqdm.tqdm(total=min(100000, len(test_dataloader)))
+    # for k, batch in enumerate(test_dataloader):
+    #     pbar.update(1)
+    #     continue
+
     # model_inference(model, train_dataloader,
     #                 max_len=200, last=args.last,
     #                 beam_size=args.beam_size, split=f"{args.name}_train")
@@ -306,7 +355,11 @@ if __name__ == "__main__":
     #                 split=f"{args.name}_valid")
     model_inference(model, test_dataloader, max_len=200,
                      last=args.last, beam_size=args.beam_size,
-                       split=f"{args.name}_test")
+                       split=f"{args.name}_test",
+                       word_beam=args.word_beam,
+                       stop_early = args.stop_early, 
+                       stop_duplicates=args.stop_duplicates,
+                       ret_token_indices=args.ret_token_indices)
 
     # # model = ShuffledTransformerStack.load_from_checkpoint(args.model_path, model).model
     # DEVICE = torch.device("cpu") if args.cpu else torch.device("cuda")
@@ -361,3 +414,7 @@ if __name__ == "__main__":
 
 #command:  python inference.py --model_path models/train_r3_varrg.ckpt --last --custom
 # --model_path models/best_bert_base_r2.ckpt --cpu --last --custom --beam_size 4 --data_path /w/nobackup/436/lambda/bert_base/data/ --name beam_test_bert_base 
+
+# --model_path models/best_roberta_base.ckpt --data_path /w/nobackup/436/lambda/roberta_base/data/ --cpu --last --custom --name roberta_test_beam --beam_size 4 --word_beam 
+
+# --model_path models/best_roberta_base.ckpt --data_path /w/nobackup/436/lambda/roberta_base/data/ --cpu --last --custom --name roberta_base --bert_type roberta_base --stop_duplicates

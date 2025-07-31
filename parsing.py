@@ -159,7 +159,8 @@ def make_lambda_term_list(words, lambda_term):
     for i, dot in enumerate(weird_dots):
         number = int(dot[3:-1])
         lambda_term = lambda_term.replace(dot, f"{words[number]}_{number}")
-
+    var_logs = []
+    var_dict={}
     for char in lambda_term:
         if char in "( )":
             if acc != "":
@@ -168,6 +169,8 @@ def make_lambda_term_list(words, lambda_term):
                     # split it up into variable and number:
                     lambda_term_list.append("λ")
                     acc = acc[1:-1]
+                    assert acc not in var_dict
+                    var_dict[acc] = f"spec_var{len(var_dict)}"
                 lambda_term_list.append(acc)
                 acc = ""
             if char != " ": lambda_term_list.append(char)
@@ -179,13 +182,10 @@ def make_lambda_term_list(words, lambda_term):
     #variable renaming:
     var_pattern = re.compile(r"(S_\d+|NP_\d+|N_\d+|PP_\d+)")
 
-    var_dict = {}
     i = 0
     while i < len(lambda_term_list):
         term = lambda_term_list[i]
-        if var_pattern.match(term):
-            if term not in var_dict:
-                var_dict[term] = f"spec_var{len(var_dict)}"
+        if var_pattern.match(term) and term in var_dict:
             lambda_term_list[i] = var_dict[term]
         i += 1
     #remove ) brackets:
@@ -266,6 +266,43 @@ def simplest(lambdas, gen_sent):
     lambda_terms = simplest_term
     return lambda_terms
 
+def missing_words_in_lambda_terms(words, lambda_term_list,
+                                   var_logs,replacement="J"):
+    missing_words = []
+    replace_copy = lambda_term_list.copy()
+    for w, word in enumerate(words):
+        #find if this constitutes an entity in the lambda term
+        #entities are of the form words_dddd
+        if word == "(": word = "LRB"
+        elif word == ")": word = "RRB"
+        elif word == "[": word = "LSB"
+        elif word == "]": word = "RSB"
+        elif word == "{": word = "LCB"
+        elif word == "}": word = "RCB"
+
+        if "λ" in word: word = word.replace("λ", "")
+        # if word not in lambda_term and word != "lamda": continue
+        if word not in " ".join(lambda_term_list): 
+            missing_words.append(w)
+            continue
+        #traverse the lambda_term 
+        min_indx, min_no = 500000, 500000
+        for i, term in enumerate(lambda_term_list):
+            if re.findall(r"_\d+", term) and term[: term.rfind(re.findall(r"_\d+", term)[0])] == word and (term not in var_logs if var_logs else "specvar" not in term) and "_" in term:
+                no = int(term[term.rfind(re.findall(r"_\d+", term)[0])+1:])
+                if no < min_no:
+                    min_no = no
+                    min_indx = i
+        if min_indx == 500000: 
+            if word != "": 
+                missing_words.append(w)
+            continue
+        #replace with something random
+        lambda_term_list[min_indx] = replacement*len(word)
+
+    lambda_term_list = replace_copy
+    return missing_words, lambda_term_list
+
 if __name__ == "__main__":
     import argparse
     import pickle
@@ -273,14 +310,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--csv_file")
     parser.add_argument('--skip_file')
-    parser.add_argument("--name")
+    parser.add_argument("--name", required=True)
+    parser.add_argument("--data_path", required=True)
     parser.add_argument("--simplest", action="store_true")
     parser.add_argument("--mode")
     args = parser.parse_args()
     
     assert args.mode in ("app", "abs", "both")
     name = args.name
-    f = open("/w/150/lambda_squad/lambdaBERT/data/dataset_splits.pkl", "rb")
+    f = open(args.data_path+"dataset_splits.pkl", "rb")
     data_split = pickle.load(f)
     f.close()
 
@@ -288,7 +326,7 @@ if __name__ == "__main__":
     skips = pickle.load(skip_file)
     skip_file.close()
 
-    main_df = pd.read_csv("/w/150/lambda_squad/lambdaBERT/data/input_sentences.csv", header=None, names=["sentence", "tags", "path"])
+    main_df = pd.read_csv(args.data_path+"input_sentences.csv", header=None, names=["sentence", "tags", "path"])
         
     split = "test" if "test" in args.csv_file else ("valid" if "valid" in args.csv_file else "train")
     _, _, split_numbers = data_split

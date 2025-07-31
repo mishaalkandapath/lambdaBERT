@@ -5,7 +5,7 @@ from collections import defaultdict
 import random
 import seaborn as sns
 
-from parsing import parse_lambda_term_1, make_lambda_term_list, find_height_tree, preprocess_sent
+from parsing import parse_lambda_term_1, make_lambda_term_list, find_height_tree, preprocess_sent, missing_words_in_lambda_terms
 
 TOKENIZER_MULTILINGUAL = BertTokenizerFast.from_pretrained("bert-base-multilingual-cased") #
 TOKENIZER_BASE = BertTokenizerFast.from_pretrained("bert-base-uncased")
@@ -25,7 +25,7 @@ BERT_MODEL = {"multilingual_bert": BERT_MODEL_MULTILINGUAL,
 # BIG_VAR_EMBS = -torch.ones((2000, 768)) * (torch.tensor(range(1, 2001)))[:, None]
 
 # STORE_PATH = "/w/150/lambda_squaddd/"
-STORE_PATH = "/w/nobackup/436/lambda/roberta_base/"#"/w/nobackup/436/lambda/simplestlambda/" #"/w/nobackup/436/lambda/bert_base/"
+STORE_PATH = "/w/nobackup/436/lambda/bert_base_filtered/"#"/w/nobackup/436/lambda/simplestlambda/" #"/w/nobackup/436/lambda/bert_base/"
 
 LAMBDA_MULTILINGUAL = [-2.6304e+00,  5.8553e-01,  4.2383e+00, -3.4630e+00, -5.1004e+00,
          6.3341e-01, -2.0096e+00,  1.1209e+00, -2.3989e-01,  1.1458e-01,
@@ -1286,95 +1286,17 @@ OPEN_RRB = {"multilingual_bert": OPEN_RRB_MULTILINGUAL,
 OPEN_RRB_LAST = {"multilingual_bert": OPEN_RRB_LAST_MULTILINGUAL, 
              "bert_base": OPEN_RRB_LAST_BASE,
              "roberta_base": OPEN_RRB_LAST_ROBERTA}
-def create_out_embeddings(sentences, lamda=False):
-    #tokenize tha sentence 
-    tokenized = TOKENIZER[os.environ["BERT_TYPE"]](sentences, 
-                          return_tensors="pt", #return torch tensors
-                          padding=True, #pad to max length in batch
-                          truncation=True) #truncate to max model length
-    #search for the tokenized id of λ
-    input_ids = tokenized["input_ids"]
-    lambda_id = TOKENIZER[os.environ["BERT_TYPE"]].convert_tokens_to_ids("λ")
-    app_id = TOKENIZER[os.environ["BERT_TYPE"]].convert_tokens_to_ids("(")
 
-    if lamda:
-        #get all the indices where the lambda token is presen
-        lambda_index_mask = (input_ids == lambda_id)
-        app_index_mask = (input_ids == app_id)
-        var_index_mask = (input_ids == TOKENIZER[os.environ["BERT_TYPE"]].convert_tokens_to_ids("np"))
-        var_index_mask = var_index_mask | (input_ids == TOKENIZER[os.environ["BERT_TYPE"]].convert_tokens_to_ids("##np"))
-        var_index_mask = (input_ids == TOKENIZER[os.environ["BERT_TYPE"]].convert_tokens_to_ids("s"))
-        var_index_mask = var_index_mask | (input_ids == TOKENIZER[os.environ["BERT_TYPE"]].convert_tokens_to_ids("##s"))
-        var_index_mask = (input_ids == TOKENIZER[os.environ["BERT_TYPE"]].convert_tokens_to_ids("pp"))
-        var_index_mask = var_index_mask | (input_ids == TOKENIZER[os.environ["BERT_TYPE"]].convert_tokens_to_ids("##pp"))
-        var_index_mask = (input_ids == TOKENIZER[os.environ["BERT_TYPE"]].convert_tokens_to_ids("n"))
-        var_index_mask = var_index_mask | (input_ids == TOKENIZER[os.environ["BERT_TYPE"]].convert_tokens_to_ids("##n"))
-        #shift the 1s in var_index_mask to the right by 1
-        var_index_mask_underscore = torch.roll(var_index_mask, shifts=1, dims=1)
-        #roll again
-        var_index_mask_no = torch.roll(var_index_mask_underscore, shifts=1, dims=1)
-        var_index_mask_no = torch.where(var_index_mask_no == 1, input_ids, 0) #make the variable numbers in the mask
-        #to ensure uniqueness batch wise we add a constant along the batch dimension
-        var_index_mask_no_new = var_index_mask_no + torch.arange(0, var_index_mask_no.size(0)).reshape(var_index_mask_no.size(0), 1)
-        #everything that isnt var no shud be zero still
-        var_index_mask_no_new[var_index_mask_no == 0] = 0
-        var_index_mask_no = var_index_mask_no_new
-
-        _, var_index_mask_no = torch.unique(var_index_mask_no, return_inverse=True) # contiguous naming
-
-
-    # the mask of tokens belonging to the variable name, both next to the lambda and within an expression
-    pad_mask = (input_ids == TOKENIZER[os.environ["BERT_TYPE"]].pad_token_id)
-    return (tokenized, lambda_index_mask, app_index_mask, var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask) if lamda else (tokenized, pad_mask)
-
-def get_bert_emb(tokenized_sents, return_last=True):
+def get_bert_emb(tokenized_sents, return_last=True, model_layer=-1):
     #get the bert embeddings
     global BERT_MODEL
     BERT_MODEL = BERT_MODEL
     with torch.no_grad():
         outputs = BERT_MODEL[os.environ["BERT_TYPE"]](**tokenized_sents, output_hidden_states=True)
-        hidden_states = outputs.hidden_states[-4:]
+        hidden_states = outputs.hidden_states
         #sum the last four hidden states
-        embs = torch.stack(hidden_states, dim=0).sum(dim=0)
-    return embs.detach() if not return_last else (embs.detach(), hidden_states[-1].detach())# no grads through bert ever
-
-def process_bert_lambda(tokenized_sents, lambda_index_mask, app_index_mask, var_index_mask, lambda_norm=True, var_norm=True):
-    assert lambda_norm if var_norm else True, "norm_lambda cant be off and norm_var be on"
-    # global BIG_VAR_EMBS
-    #get the bert embeddings
-    var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask = var_index_mask
-    embs = get_bert_emb(tokenized_sents)
-    #time to mask out the variables
-    if var_norm: 
-        embs[var_index_mask | var_index_mask_underscore | pad_mask] = torch.zeros_like(embs[0, 0, :]) # also make hte pad embeddings 0
-        mask_sort = torch.argsort((var_index_mask | var_index_mask_underscore).to(torch.uint8), stable=True) #move the embeddiungs to the end
-        
-        # rearrange everything
-        embs = torch.gather(embs, -1, mask_sort.unsqueeze(-1).expand(-1, -1, embs.size(-1)))  # all the var names and the underscores have been moveed to the end
-        lambda_index_mask = torch.gather(lambda_index_mask, -1, mask_sort)
-        var_index_mask_no = torch.gather(var_index_mask_no, -1, mask_sort)
-        app_index_mask = torch.gather(app_index_mask, -1, mask_sort)  
-        var_index_mask = torch.gather(var_index_mask, -1, mask_sort)
-        var_index_mask_underscore = torch.gather(var_index_mask_underscore, -1, mask_sort)
-        pad_mask = torch.gather(pad_mask, -1, mask_sort) 
-        pad_mask = pad_mask | var_index_mask | var_index_mask_underscore #extend the pad mask
-        
-    #     #now we have the var_numbers which we need to uniq-ify
-    #     uniques, indices = torch.unique(var_index_mask_no.reshape(-1), return_inverse=True, sorted=True)
-    #     # mapping = torch.arange(1, len(uniques) + 1, dtype=torch.int64)
-    #     # new_var_no_index = mapping[indices]
-    #     # new_var_no_index = new_var_no_index.reshape(var_index_mask_no.shape)
-    #     # embs[var_index_mask_no != 0] = BIG_VAR_EMBS[var_index_mask_no != 0]
-
-    #     # embs[var_index_mask_no != 0] = BIG_VAR_EMBS[indices != 0]
-    #     #one time operation, perform on CPU
-    #     # indices = indices.to(torch.device('cpu'))
-    #     # var_index_mask_no = var_index_mask_no.to(torch.device('cpu'))
-    #     embs = embs.index_put((var_index_mask_no != 0, ), BIG_VAR_EMBS[indices[indices != 0]], accumulate=True)
-    if lambda_norm:
-        embs[lambda_index_mask] = torch.tensor(LAMBDA[os.environ["BERT_TYPE"]], device=embs.device, dtype=embs.dtype)#torch.ones((embs.shape[-1], ), device=embs.device, dtype=embs.dtype)
-
-    return embs, lambda_index_mask, app_index_mask, var_index_mask, var_index_mask_underscore, var_index_mask_no, pad_mask
+        embs = torch.stack(hidden_states[-4:], dim=0).sum(dim=0)
+    return embs.detach() if not return_last else (embs.detach(), hidden_states[model_layer].detach())# no grads through bert ever
 
 def parse_lambda_term(lambda_term):
     lambda_term_list = []
@@ -1425,8 +1347,7 @@ def plot_variable_order_distribution(lambda_terms, save_as=""):
     
     plt.savefig(save_as)
 
-
-def create_out_tensor(sentence, lambda_term):
+def create_out_tensor(sentence, lambda_term, skip_bad=False, model_layer=-1):
     # group the offsets into a word dictionary
     # for example {(0, 8): [(0, 2), (2, 6), (6, 8)]}
 
@@ -1452,8 +1373,66 @@ def create_out_tensor(sentence, lambda_term):
     while replacement in words:
         replacement = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[random.randint(0, 25)]
 
+
+    # run through lambda_term_once:
+    #ptb tokenize the lambda term 
+    lambda_term_list = []
+    acc = ""
+    # assert len(re.findall(r"<w_\d+>", lambda_term)) == 0, f"Invalid lambda term {lambda_term}\n{words}"
+    weird_dots = re.findall(r"<w_\d+>", lambda_term)
+    for i, dot in enumerate(weird_dots):
+        number = int(dot[3:-1])
+        lambda_term = lambda_term.replace(dot, f"{words[number]}_{number}")
+
+    for char in lambda_term:
+        if char in "( )":
+            if acc != "":
+                lambda_term_list.append(acc)
+                acc = ""
+            if char != " ": lambda_term_list.append(char)
+        else: 
+            acc += char
+    if acc != "": 
+        if acc == "λ":
+            lambda_term_list.append("µ")
+        else:lambda_term_list.append(acc)
+
+    lambda_term_list = [w.replace("\u200e", "") for w in lambda_term_list]
+
+    replace_copy = lambda_term_list.copy()
+    #first compile a list of variable positions:
+    var_logs = []
+    var_nos = []
+    lambda_pattern = re.compile(r"λ\w+_\d+\.")
+    for i, element in enumerate(lambda_term_list):
+        if lambda_pattern.match(element) is not None:
+            var_logs.append(element[1:-1])
+            var_nos.append(int(element[element.rfind("_")+1:-1]))
+            #check if this variable occurs before it shud -- prolly is a word then
+            if element[1:-1] in lambda_term_list[:i]:
+                #rename it slightly differently
+                lambda_term_list[lambda_term_list.index(element[1:-1])] = lambda_term_list[lambda_term_list.index(element[1:-1])]+"11"
+    
+    # are there any words that are not present in the lambda term?
+    if skip_bad:
+        missing_words, lambda_term_list = missing_words_in_lambda_terms(words,
+                                                                        lambda_term_list,
+                                                                        var_logs,
+                                                                        replacement=replacement
+                                                                        )
+        words = [w for w_idx, w in enumerate(words) if w_idx not in missing_words]
+
+        tokens = TOKENIZER[os.environ["BERT_TYPE"]](" ".join(words), add_special_tokens=True, return_tensors="pt", return_offsets_mapping=True)
+
+        word_mapping = tokens.words()
+        word_mapping[0] = -1
+        word_mapping[-1] = -1
+        
+        offset_mapping = tokens.offset_mapping[0]
+
     # print(lambda_term)
     repl_words = words.copy()
+    acc=""
     for i, (start, end) in enumerate(offset_mapping):
         if start ==0 and end == 0: 
             if acc != "": new_word_mapping.extend([words.index(acc)]*how_many)
@@ -1484,49 +1463,12 @@ def create_out_tensor(sentence, lambda_term):
     # print(words)
 
     #get the bert embedding:
-    representations, last_representations = get_bert_emb(tokens)
+    representations, last_representations = get_bert_emb(tokens,
+                                                        model_layer=model_layer)
     assert representations.shape[1] == tokens.input_ids.shape[1], f"Shape mismatch {representations.shape} {tokens.input_ids.shape}"
 
-    #ptb tokenize the lambda term 
-    lambda_term_list = []
-    acc = ""
-    # assert len(re.findall(r"<w_\d+>", lambda_term)) == 0, f"Invalid lambda term {lambda_term}\n{words}"
-    weird_dots = re.findall(r"<w_\d+>", lambda_term)
-    for i, dot in enumerate(weird_dots):
-        number = int(dot[3:-1])
-        lambda_term = lambda_term.replace(dot, f"{words[number]}_{number}")
-
-    for char in lambda_term:
-        if char in "( )":
-            if acc != "":
-                lambda_term_list.append(acc)
-                acc = ""
-            if char != " ": lambda_term_list.append(char)
-        else: 
-            acc += char
-    if acc != "": 
-        if acc == "λ":
-            lambda_term_list.append("µ")
-        else:lambda_term_list.append(acc)
-
-    lambda_term_list = [w.replace("\u200e", "") for w in lambda_term_list]
-
-    replace_copy = lambda_term_list.copy()
     term_to_word_index = {}
     #at this point we have replace copy like: ['(', '(', 'is_15', '(', 'an_16', '(', 'American_17', ...]
-
-    #first compile a list of variable positions:
-    var_logs = []
-    var_nos = []
-    lambda_pattern = re.compile(r"λ\w+_\d+\.")
-    for i, element in enumerate(lambda_term_list):
-        if lambda_pattern.match(element) is not None:
-            var_logs.append(element[1:-1])
-            var_nos.append(int(element[element.rfind("_")+1:-1]))
-            #check if this variable occurs before it shud -- prolly is a word then
-            if element[1:-1] in lambda_term_list[:i]:
-                #rename it slightly differently
-                lambda_term_list[lambda_term_list.index(element[1:-1])] = lambda_term_list[lambda_term_list.index(element[1:-1])]+"11"
 
     # words[3] = "lamda"
     for w, word in enumerate(words):
@@ -1552,7 +1494,9 @@ def create_out_tensor(sentence, lambda_term):
                     min_indx = i
         if min_indx == 500000: 
             if word != "": 
-                print("First instance Could not find a match for ", word, "in lambda term ", )
+                if skip_bad:
+                    raise ValueError(f"{word} should have been removed before from {lambda_term_list}")
+                else: print("First instance Could not find a match for ", word, "in lambda term ", )
             continue
         #replace with something random
         lambda_term_list[min_indx] = replacement*len(word)
@@ -1673,7 +1617,20 @@ if __name__ == "__main__":
     import os
     from tqdm import tqdm
     import matplotlib.pyplot as plt
-    df = pd.read_csv("lambdaBERT/data/input_sentences.csv", header=None)
+
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--skip_bad", action="store_true")
+    parser.add_argument("--model_layer", type=int, default=-1)
+    parser.add_argument("--simplest", action="store_true")
+    parser.add_argument("--store_path", required=True)
+
+    args = parser.parse_args()
+
+    STORE_PATH = args.store_path
+
+    df = pd.read_csv("data/input_sentences.csv", header=None)
     sentences = len(df)     
 
     bad_sentences = []
@@ -1688,6 +1645,7 @@ if __name__ == "__main__":
 
     bads = 0
     pbar = tqdm(range(sentences))
+    print(f"Storage path is {STORE_PATH}")
     for i in pbar: # 132621, 132622+4
     # for i in indices:
     #40000+2902+930+5
@@ -1700,21 +1658,22 @@ if __name__ == "__main__":
         with open(path, 'r') as f:
             lambda_terms = f.readlines()
 
-        # choose the simplest lambda term 
-        # simplest_term, smallest_depth = None, 100000
-        # _, words = preprocess_sent(gen_sent)
-        # for term in lambda_terms:
-        #     term2 = make_lambda_term_list(words, term.strip())
-        #     term2 = [t for t in term2 if t != ")"]
-        #     tree = parse_lambda_term_1(term2)[0]
-        #     d = find_height_tree(tree)
-        #     if d < smallest_depth:
-        #         smallest_depth = d
-        #         simplest_term = term.strip()
-        # lambda_terms = simplest_term
-
-        # or just choose the first:
-        lambda_terms = lambda_terms[0].strip()
+        if args.simplest:
+            # choose the simplest lambda term 
+            simplest_term, smallest_depth = None, 100000
+            _, words = preprocess_sent(gen_sent)
+            for term in lambda_terms:
+                term2 = make_lambda_term_list(words, term.strip())
+                term2 = [t for t in term2 if t != ")"]
+                tree = parse_lambda_term_1(term2)[0]
+                d = find_height_tree(tree)
+                if d < smallest_depth:
+                    smallest_depth = d
+                    simplest_term = term.strip()
+            lambda_terms = simplest_term
+        else:
+            # or just choose the first:
+            lambda_terms = lambda_terms[0].strip()
 
         lambda_terms = lambda_terms.replace(")", "")
         try:
@@ -1722,7 +1681,9 @@ if __name__ == "__main__":
                 target_emb, target_emb_last, target_tokens, 
                 var_mask, lambda_mask, app_mask) = create_out_tensor(
                     gen_sent, 
-                    lambda_terms
+                    lambda_terms,
+                    skip_bad=args.skip_bad,
+                    model_layer=args.model_layer
             )
         except Exception as e:
             exceptions.append(e)
@@ -1730,6 +1691,13 @@ if __name__ == "__main__":
             bads+=1
             pbar.set_description(f"{bads} bads")
             continue
+        # (sent_emb, sent_emb_last, 
+        #         target_emb, target_emb_last, target_tokens, 
+        #         var_mask, lambda_mask, app_mask) = create_out_tensor(
+        #             gen_sent, 
+        #             lambda_terms,
+        #             skip_bad=args.skip_bad
+        #     )
 
         # print(" ".join(convert_lambda_tokens(TOKENIZER[os.environ["BERT_TYPE"]].convert_ids_to_tokens([101 if t<0 else t for t in target_tokens]), lambda_mask, var_mask, app_mask)))
 
@@ -1784,16 +1752,11 @@ if __name__ == "__main__":
     #     # target_emb = representations[]
     #     torch.save((sent_emb, target_emb, var_mask, lambda_mask, app_mask), f"/w/150/lambda_squad/{df.iloc[i, 2][:-4]}.pt")
 
-
-
-# bad sentences for bert base ucnased: 
-# [8076, 8345, 18879, 18884, 23207, 23358, 23359, 62121, 62224, 70190, 85396, 85398, 85409, 85436, 91424, 91426, 107889, 126868, 126918, 129526, 132621, 132626]
-
-#bad sentences for something idk anymore
-#[8076, 8345, 18879, 18884, 23207, 23358, 23359, 62121, 62224, 70190, 85396, 85398, 85409, 85436, 91424, 91426, 107889, 126868, 126918, 129526, 132621, 132626]
-
 # bad sentences for simplest lambda term
 # [8076, 8345, 18879, 18884, 23207, 23358, 23359, 62121, 62224, 70190, 85396, 85398, 85409, 85436, 91424, 91426, 107889, 126868, 126918, 129526]
         
 # actual bad sentences for bert base
 # [8076, 8345, 18879, 18884, 23207, 23358, 23359, 62121, 62224, 70190, 85396, 85398, 85409, 85436, 91424, 91426, 107889, 126868, 126918, 129526]
+
+#954 bad sentences for roberta_base
+#[0, 1019, 1069, 1086, 1119, 1120, 1123, 1131, 1182, 1193, 1220, 1225, 1322, 1337, 1382, 1385, 1390, 1393, 1626, 1631, 1775, 1776, 1779, 1780, 1854, 1856, 1894, 2018, 2022, 2128, 2130, 2261, 2309, 2427, 3319, 4035, 4754, 4755, 5499, 5501, 5943, 5944, 6098, 6103, 6639, 6640, 6641, 6757, 6967, 7015, 7018, 7540, 7632, 7726, 7823, 7866, 7869, 7883, 7899, 7928, 7943, 7944, 7966, 7967, 7968, 7973, 8053, 8054, 8067, 8076, 8106, 8116, 8148, 8187, 8217, 8221, 8246, 8282, 8285, 8292, 8332, 8345, 8355, 8375, 8490, 8493, 8506, 8511, 8518, 8528, 8530, 8531, 8534, 8539, 8547, 8548, 8564, 8633, 8701, 8702, 8706, 8709, 10478, 10972, 10973, 11148, 11157, 11167, 11169, 11173, 11174, 11176, 11318, 11439, 12297, 12512, 12642, 12657, 12746, 12798, 12799, 12846, 13487, 14529, 14805, 15102, 15180, 15305, 16042, 16639, 17964, 18505, 18507, 18508, 18691, 18733, 18734, 18801, 18803, 18804, 18824, 18825, 18830, 18841, 18859, 18861, 18863, 18879, 18884, 18890, 18891, 18893, 18894, 20161, 20219, 20220, 20224, 20227, 20589, 21287, 21897, 22384, 22488, 22564, 22598, 22849, 22852, 22903, 23081, 23094, 23185, 23187, 23200, 23205, 23207, 23237, 23248, 23250, 23256, 23263, 23265, 23302, 23303, 23305, 23313, 23314, 23328, 23330, 23336, 23338, 23342, 23358, 23359, 23420, 23502, 23666, 24455, 24461, 24462, 24463, 24578, 24580, 24674, 24675, 24677, 24774, 24780, 24907, 25357, 25536, 25542, 25563, 25581, 25587, 25589, 25604, 25605, 25611, 25612, 25712, 25781, 26916, 26922, 27051, 27100, 27102, 27104, 27105, 27108, 27109, 27110, 27111, 27112, 27113, 27114, 27122, 27126, 27129, 27145, 27211, 27287, 28466, 28997, 29234, 29663, 29688, 29716, 29724, 29756, 29814, 29872, 29884, 29885, 29914, 29976, 30088, 30201, 30922, 31067, 31113, 31151, 32617, 32632, 32728, 32780, 32781, 32782, 32784, 32785, 32792, 32801, 32809, 32811, 33118, 33157, 33159, 33161, 33164, 33166, 33170, 33172, 34220, 34490, 34515, 34516, 34541, 34574, 34589, 34591, 34675, 34766, 34826, 34830, 34865, 34915, 34956, 34987, 35078, 35437, 35543, 35570, 35580, 35591, 35592, 35593, 35636, 35681, 35873, 35874, 36878, 37325, 37488, 37513, 37707, 37814, 37913, 38967, 38997, 39038, 39126, 39152, 39165, 39423, 39822, 40762, 41840, 41859, 42334, 42456, 43107, 43226, 43256, 43258, 43833, 43947, 43948, 44010, 44168, 45094, 45110, 45133, 45167, 46180, 46217, 46390, 46392, 46449, 46516, 46517, 46554, 46630, 46676, 46703, 46723, 46808, 46848, 46863, 46904, 46910, 46911, 46926, 46938, 46969, 46971, 47405, 47971, 48052, 48277, 48667, 48743, 48920, 49217, 49459, 49460, 49543, 49544, 49581, 49687, 50291, 50586, 50587, 50799, 51591, 51990, 52092, 52167, 52732, 52782, 52807, 52845, 52848, 56657, 57522, 57536, 57792, 59066, 59182, 59279, 59348, 59418, 59718, 60954, 62069, 62086, 62087, 62106, 62108, 62120, 62121, 62141, 62158, 62224, 62263, 62264, 62265, 62266, 62268, 62280, 62282, 62475, 62719, 63672, 63781, 64200, 64600, 65819, 65822, 65836, 66885, 67206, 67553, 67920, 68176, 68298, 68457, 68633, 68638, 70190, 70321, 70448, 70508, 70656, 71147, 71752, 71753, 71758, 71849, 71891, 71976, 71979, 72076, 72764, 72925, 73829, 73865, 73961, 74643, 76478, 76910, 76982, 78046, 78073, 78903, 79363, 79756, 80884, 81798, 81821, 83454, 83959, 83982, 83983, 84038, 84040, 84049, 84799, 85107, 85168, 85169, 85205, 85265, 85383, 85396, 85398, 85399, 85409, 85436, 85783, 85805, 85909, 86106, 86194, 86228, 86231, 86290, 86381, 86382, 86557, 86569, 86591, 86630, 89352, 89687, 90410, 91424, 91426, 93238, 93264, 94985, 95550, 95610, 96327, 97151, 97162, 97171, 97173, 97201, 98381, 98383, 98412, 98779, 99026, 99215, 99843, 99856, 100095, 100125, 100226, 100337, 100457, 100511, 100512, 100513, 100514, 100515, 100517, 100518, 100597, 100691, 100769, 102343, 103134, 103653, 104345, 104627, 105327, 105652, 105687, 105828, 105829, 106094, 106100, 106691, 106696, 106886, 106900, 106913, 106914, 106916, 106917, 107034, 107053, 107534, 107546, 107547, 107595, 107597, 107602, 107637, 107638, 107644, 107651, 107665, 107688, 107696, 107705, 107713, 107715, 107733, 107738, 107739, 107751, 107752, 107758, 107763, 107778, 107817, 107831, 107839, 107846, 107889, 109031, 109440, 109446, 109448, 109451, 109454, 109473, 109476, 109477, 109507, 109512, 109532, 109536, 109537, 109689, 109692, 109778, 109781, 109782, 109945, 109950, 109955, 109957, 109958, 109962, 110084, 110087, 110324, 110721, 111119, 111121, 111249, 111597, 113640, 114781, 114892, 114987, 115708, 115757, 115803, 115817, 115821, 115835, 116091, 116658, 116834, 116935, 116943, 117133, 117608, 117621, 117694, 117695, 117733, 117792, 117987, 118291, 118330, 118424, 118426, 118958, 119130, 119142, 119400, 119411, 119420, 119467, 119478, 119480, 119481, 119497, 119753, 119788, 119881, 120238, 120239, 120241, 120264, 120266, 120278, 120289, 120290, 120291, 120344, 120345, 120346, 120347, 120348, 120359, 120360, 120361, 120373, 120390, 120391, 120402, 120405, 120417, 120419, 120480, 120481, 120482, 120527, 120540, 120542, 120546, 120557, 120563, 120574, 120575, 121172, 122416, 122417, 122418, 122419, 122420, 122421, 123238, 123239, 123787, 123870, 124313, 124589, 124959, 125270, 126213, 126744, 126868, 126918, 126919, 126920, 126928, 126929, 126938, 126939, 126940, 127197, 128224, 128239, 128267, 128269, 128271, 128564, 129374, 129403, 129404, 129468, 129488, 129521, 129526, 129653, 131738, 131994, 132420, 132421, 132422, 132553, 132600, 132601, 132602, 132621, 133920, 134045, 134053, 134295, 136247, 136685, 136686, 136719, 136913, 136914, 137895, 137927, 138044, 138147, 138189, 138434, 139180, 139627, 139687, 139941, 140356, 141214, 141344, 141501, 141537, 141622, 141694, 141715, 141726, 141741, 141761, 141813, 141867, 141869, 141884, 142274, 142275, 142276, 142281, 142282, 142283, 142291, 142297, 142298, 142300, 142307, 142311, 142312, 142329, 142338, 142340, 142362, 142415, 142423, 142454, 142480, 142511, 143342, 143358, 143434, 143495, 143690, 143691, 143692, 143729, 143745, 143746, 143761, 143762, 143763, 143782, 143790, 143800, 143802, 143804, 143805, 145130, 145131, 145132, 145137, 145140, 145141, 145143, 145694, 145710, 145711, 145805, 145822, 145922, 145979, 145980, 145990, 145991, 145995, 145996, 146001, 146434, 146476, 147125, 147140, 147155, 147177, 147178, 147200, 147202, 147224, 147244, 147248, 147274, 147286, 147296, 147328, 147632, 148250, 148280, 148390, 148443, 148914, 149030, 149031, 149179, 149250, 149254, 149513, 149516, 149538, 149539, 150004, 150005, 150051, 150176, 150488, 150494, 150525, 150890, 150893, 150906, 150920, 150921, 150964, 151030, 151088, 151089, 151090, 151097, 151113, 151114, 151144, 151169, 151171, 151172, 151181, 151196, 151198, 151211, 151232, 151235, 151359, 151603, 151608, 151612, 152483, 152562, 152565, 152874, 153203, 153496, 153841, 154169, 154174, 154177, 154548, 154564, 154569, 154633, 154634, 154657, 154658, 154659, 154662, 154663, 154727, 154742, 154743, 154872, 154873, 154874, 154891, 156296, 156560, 156569, 156583, 156730, 156976, 157007, 158631, 159666, 160048, 160205, 160206, 160207, 162463, 163596]
