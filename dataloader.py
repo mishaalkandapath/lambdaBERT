@@ -10,7 +10,7 @@ from tokenization import preprocess_sent, TOKENIZER
 from parsing import simplest, make_lambda_term_list, missing_words_in_lambda_terms
 from torch.nn.utils.rnn import pad_sequence, pack_padded_sequence
 
-import traceback, pickle
+import traceback, pickle, os
 
 #create a directory where the key is a csv. each row has first column as the raw text sentence, and the second col being the 
 # path to the file that stores all its lambda terms
